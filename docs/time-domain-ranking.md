@@ -50,3 +50,24 @@ option, not a new default. The candidate pool is limited: temporal ranking
 cannot find codevectors absent from the current spectral VQ search. Further
 work should examine time-aware VQ candidates and independent listening before
 broadening the spectral guard or enabling this option by default.
+
+
+## Rejected gain/VQ intermediate-pool experiment
+
+The temporal pool was extended to include distinct intermediate main-VQ and
+gain/sub-gain states already visited during each envelope trial. The final
+spectral winner remained available. Candidates were pruned against the
+unchanged 5% frame spectral guard, and replay restored the exact saved
+quantization state with the chosen envelope's histories.
+
+Targeted adaptive codec checks passed. The extra pool did not produce a
+useful overall improvement; in the synthetic Long-frame onset check both
+pre-attack and attack error increased slightly. The extension was reverted.
+No extra pool option is exposed. Private measurements remain outside Git.
+
+This also illustrates the limit of the current objective: a better local
+score with fixed prior history and assumed zero future error is not a
+monotonic improvement of the final decoded signal. Reconsider the objective
+and candidate diversity before expanding this pool again. A separate next
+priority is full PPC search, currently unused for harmonic structure, rather
+than further breadth changes to these closely related gain/VQ candidates.
