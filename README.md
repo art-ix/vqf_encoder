@@ -49,7 +49,9 @@ The foobar2000 SDK is **not** part of this repository.
 
 The `twinvq` library and `vqf_encode` CLI build without the SDK.
 
-Linux (this tree): `make && make test` (g++ 12+, C++17).
+Linux (this tree): `make -j && make test` (g++ 12+, C++17). Objects live in
+`obj/`; codebook tables compile at `-O0` so incremental encoder rebuilds skip
+the 575 KB table TU.
 
 ## foobar2000 SDK (component build)
 
@@ -116,14 +118,22 @@ Converter preset:
 | Parameters | `-b 96 %s %d` |
 | Format | WAV (temp file, `%s`) |
 
-Bitrate `-b` is **total** kbps. Stereo 44.1 kHz uses 80 or 96 kbps
+Bitrate `-b` is **total** kbps. Stereo 44.1 kHz uses **80 or 96 kbps**
 (40 or 48 kbps/ch). The encoder snaps to the nearest legal TwinVQ mode.
 
+There is **no 128 kbps** VQF mode. The COMM chunk can store any integer, but
+the bitstream is looked up as `(sample_rate_kHz, kbps_per_channel)` against a
+fixed set of NTT codebooks. FFmpeg, Yamaha SoundVQ, `vqf_decoder` and this
+encoder all stop at **48 kbps/ch**. Wikipedia’s 112–192 kbit/s list does not
+match released TwinVQ tables.
+
 ```
+vqf_encode.exe --list-modes
 vqf_encode.exe -b 96 --title "Track" --artist "Name" input.wav out.vqf
 vqf_encode.exe --test-mdct
 vqf_encode.exe --test-roundtrip 0.5
 ```
+
 
 ## Supported modes
 
@@ -134,6 +144,10 @@ vqf_encode.exe --test-roundtrip 0.5
 | 16 kHz | 16 | 1024 |
 | 22.05 kHz | 20, 24, 32 | 1024 / 512 |
 | 44.1 kHz | 40, 48 | 2048 |
+
+**128 kbps stereo is not possible** — that would be 64 kbps/ch, and there is
+no `44_64` codebook. Highest 44.1 kHz stereo mode is 96 kbps.
+
 
 Input WAV is 16/24/32-bit PCM, mono or stereo. Other rates are linearly
 resampled to the nearest TwinVQ rate.

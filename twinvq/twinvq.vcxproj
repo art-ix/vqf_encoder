@@ -61,7 +61,12 @@
     <ClCompile Include="src\twinvq_mdct.cpp" />
     <ClCompile Include="src\twinvq_decoder.cpp" />
     <ClCompile Include="src\twinvq_encoder.cpp" />
-    <ClCompile Include="src\twinvq_tables.cpp" />
+    <ClCompile Include="src\twinvq_tables.cpp">
+      <Optimization>Disabled</Optimization>
+      <WholeProgramOptimization>false</WholeProgramOptimization>
+      <IntrinsicFunctions>false</IntrinsicFunctions>
+      <DebugInformationFormat>None</DebugInformationFormat>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="include\twinvq\twinvq_types.hpp" />

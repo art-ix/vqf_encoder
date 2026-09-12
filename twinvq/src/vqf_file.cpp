@@ -215,6 +215,17 @@ const ModeTab* select_mode(int sample_rate, int bitrate_kbps, int channels) {
     }
 }
 
+const LegalMode* legal_modes(int& count) {
+    static const LegalMode kModes[] = {
+        {8000, 8, 512},   {11025, 8, 512},  {11025, 10, 512}, {16000, 16, 1024},
+        {22050, 20, 1024}, {22050, 24, 1024}, {22050, 32, 512}, {44100, 40, 2048},
+        {44100, 48, 2048},
+    };
+    count = static_cast<int>(sizeof(kModes) / sizeof(kModes[0]));
+    return kModes;
+}
+
+
 bool parse_vqf_header(const ReadFn& read, VqfInfo& info, std::string& error) {
     info = VqfInfo{};
     uint8_t magic[12];

@@ -118,6 +118,7 @@ private:
 
 // Pick a supported TwinVQ mode for (rate, channels). Prefers the highest
 // bitrate at that rate when `bitrate_kbps` is 0 or not an exact mode.
+// 128 kbps stereo is not legal (no 64 kbps/ch table); 96 is the 44.1 kHz max.
 bool pick_encoder_mode(int sample_rate, int channels, int bitrate_kbps,
                        int& out_rate, int& out_bitrate_kbps, std::string& error);
 

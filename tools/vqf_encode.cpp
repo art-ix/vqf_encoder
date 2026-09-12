@@ -106,10 +106,12 @@ void resample_linear(const Wav& in, int out_rate, int out_ch, std::vector<float>
 
 void usage() {
     std::cerr << "usage: vqf_encode [options] input.wav output.vqf\n"
+              << "       vqf_encode --list-modes\n"
               << "       vqf_encode --test-mdct\n"
               << "       vqf_encode --test-roundtrip [seconds]\n"
               << "\noptions:\n"
-              << "  -b, --bitrate KBPS   total bitrate (default: auto for sample rate)\n"
+              << "  -b, --bitrate KBPS   total bitrate; snaps to a legal TwinVQ mode\n"
+              << "                       (44.1 kHz stereo max is 96 = 48 kbps/ch; there is no 128)\n"
               << "  --title/--artist/--album/--year/--track/--genre/--comment TEXT\n"
               << "  --no-delay           do not prepend priming frames\n"
               << "\nfoobar2000 Converter:\n"
@@ -117,6 +119,19 @@ void usage() {
               << "  Extension   vqf\n"
               << "  Parameters  -b 96 %s %d\n";
 }
+
+void list_modes() {
+    int n = 0;
+    const auto* modes = twinvq::legal_modes(n);
+    std::cout << "rate_hz  kbps/ch  stereo_total  frame\n";
+    for (int i = 0; i < n; i++) {
+        std::cout << "  " << modes[i].sample_rate << "    " << modes[i].kbps_per_channel << "       "
+                  << (modes[i].kbps_per_channel * 2) << "            " << modes[i].frame_samples << "\n";
+    }
+    std::cout << "\nVQF (NTT TwinVQ / Yamaha SoundVQ) has no 56/64 kbps-per-channel codebook,\n"
+                 "so 112/128/160/192 kbps stereo at 44.1 kHz cannot be encoded. Max is 96 kbps.\n";
+}
+
 
 int test_roundtrip(double seconds) {
     twinvq::Encoder::Config cfg;
@@ -222,6 +237,10 @@ int test_roundtrip(double seconds) {
 } // namespace
 
 int main(int argc, char** argv) try {
+    if (argc >= 2 && std::string(argv[1]) == "--list-modes") {
+        list_modes();
+        return 0;
+    }
     if (argc >= 2 && std::string(argv[1]) == "--test-mdct") {
         float e1 = 0, e2 = 0;
         const bool a = twinvq::imdct_self_test(&e1);
@@ -247,6 +266,9 @@ int main(int argc, char** argv) try {
         };
         if (a == "-h" || a == "--help") {
             usage();
+            return 0;
+        } else if (a == "--list-modes") {
+            list_modes();
             return 0;
         } else if (a == "-b" || a == "--bitrate") {
             cfg.bitrate_kbps = std::stoi(need("-b"));
@@ -284,8 +306,15 @@ int main(int argc, char** argv) try {
     const Wav wav = read_wav(in_path);
     int out_rate = 0, out_br = 0;
     std::string err;
+    const int want = cfg.bitrate_kbps;
     if (!twinvq::pick_encoder_mode(wav.rate, wav.channels, cfg.bitrate_kbps, out_rate, out_br, err))
         throw std::runtime_error(err);
+    if (want > 0 && want != out_br) {
+        std::cerr << "note: " << want << " kbps is not a TwinVQ/VQF mode; using " << out_br
+                  << " kbps (" << (out_br / wav.channels) << " kbps/ch at " << out_rate << " Hz)\n";
+        if (want >= 112 && out_rate == 44100)
+            std::cerr << "      44.1 kHz stereo max is 96 kbps (48 kbps/ch); no 128k codebook exists.\n";
+    }
     cfg.sample_rate = out_rate;
     cfg.channels = wav.channels;
     cfg.bitrate_kbps = out_br;

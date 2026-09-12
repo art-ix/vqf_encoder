@@ -13,7 +13,7 @@ const GUID guid_branch = {0x5e91c2aa, 0x17b4, 0x4c8e, {0x9d, 0x3a, 0x6b, 0x11, 0
 const GUID guid_bitrate = {0x5e91c2ab, 0x17b4, 0x4c8e, {0x9d, 0x3a, 0x6b, 0x11, 0x44, 0x8f, 0x20, 0x77}};
 
 advconfig_branch_factory g_branch("TwinVQ encoder", guid_branch, advconfig_entry::guid_root, 0);
-advconfig_integer_factory g_bitrate("Bitrate (kbps, total)", guid_bitrate, guid_branch, 0, 96, 16, 192);
+advconfig_integer_factory g_bitrate("Bitrate (kbps, total)", guid_bitrate, guid_branch, 0, 96, 16, 96);
 
 int pick_bitrate(int sample_rate, int channels) {
     int want = static_cast<int>(g_bitrate.get());

@@ -19,6 +19,17 @@ bool parse_vqf_header_mem(const uint8_t* data, size_t size, VqfInfo& info, std::
 
 const ModeTab* select_mode(int sample_rate, int bitrate_kbps, int channels);
 
+// Official NTT TwinVQ / Yamaha SoundVQ modes (kbps per channel). There is no
+// 56/64 kbps-per-channel table, so 112/128/160/192 kbps stereo at 44.1 kHz
+// is not a legal VQF mode — pick_encoder_mode snaps to 80 or 96.
+struct LegalMode {
+    int sample_rate;
+    int kbps_per_channel;
+    int frame_samples;
+};
+const LegalMode* legal_modes(int& count);
+
+
 // Rebuild TWIN header + DATA marker (not the audio payload).
 std::vector<uint8_t> serialize_vqf_header(const VqfInfo& info);
 
