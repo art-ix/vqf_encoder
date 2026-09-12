@@ -157,8 +157,12 @@ no `44_64` codebook. Highest 44.1 kHz stereo mode is 96 kbps.
 
 
 Input WAV is 16/24/32-bit PCM or 32-bit IEEE float, mono or stereo, including
-WAVE_FORMAT_EXTENSIBLE. Other rates are linearly
-resampled to the nearest TwinVQ rate.
+WAVE_FORMAT_EXTENSIBLE. Other rates are converted to the selected TwinVQ rate using a centered
+Blackman-windowed sinc filter with anti-alias filtering. The transition band
+is approximately 90–100% of the lower Nyquist frequency. Conversion preserves
+sample-zero alignment, rounds output duration to the nearest sample, and
+extends endpoint samples at the boundaries. Native-rate input is unchanged.
+Run `vqf_encode --test-resample` for filter and timing regression checks.
 
 The encoder uses an FFT-based forward MDCT, reconstruction-weighted two-stage
 VQ searches, and fitted channel gains. See [quality measurements and regression

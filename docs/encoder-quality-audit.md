@@ -153,3 +153,41 @@ Use FFmpeg as an independent compatibility check, all 18 modes for regression,
 and blind A/B or ABX listening for audibility. ABX establishes detectability;
 a preference test is needed to claim that listeners prefer the new version.
 Do not modify decoder tables or invent higher-bitrate modes as a quality fix.
+
+
+## Implementation update: band-limited CLI resampling
+
+The first implementation replaces linear interpolation with a centered
+Blackman-windowed sinc filter (96/cutoff samples of support on each side).
+The cutoff is 95% of the lower Nyquist frequency. Phase kernels are normalized
+for DC, precomputed with up to 1024 phases, and linearly interpolated where
+needed. Integer phase accumulation avoids duration-dependent timing drift.
+Endpoints use constant extension; the filter introduces no sample-zero offset.
+Extremely large downsampling ratios requiring support above 4096 input samples
+are rejected. There is no new library dependency or bitstream change.
+
+Linux validation after the change:
+
+- `make -j4 test`: passed, including the new `--test-resample` suite and all
+  existing codec/MDCT/LPC tests.
+- `node tools/test_wav.mjs bin/vqf_encode`: passed.
+- Seven rate pairs cover 48/88.2/96 -> 44.1 kHz, 32 -> 44.1 kHz,
+  24 -> 22.05 kHz, 12 -> 11.025 kHz and 6 -> 8 kHz.
+- Analytic tones at 5%, 50% and 90% of the lower Nyquist frequency:
+  worst relative RMS waveform error below 0.000110 (0.011%).
+- Tested downsampling stopband tones: worst relative RMS below 3.02e-5,
+  approximately 90.4 dB rejection; the regression gate is 80 dB.
+  Includes the explicit 30 kHz tone at 88.2 -> 44.1 kHz.
+- Constant signals, single-sample and empty inputs, native-rate identity,
+  channel isolation, output length and impulse timing passed.
+- One-second stereo CLI inputs at 48/88.2/96 kHz encoded and independently
+  decoded by FFmpeg to 45056 finite PCM frames each (44100 source-equivalent
+  samples plus codec tail padding). Peaks: 0.285392 / 0.285356 / 0.285268.
+  FFmpeg exited successfully but still logged the previously documented
+  end-of-input VQF demux error; this change does not fix container tail handling.
+
+The new regression command is also added to the Windows CI workflow; Windows
+results are not claimed by these local Linux measurements. These tests establish
+resampling behavior, not perceived quality improvements on music. Native-rate
+44.1 kHz inputs bypass this resampler. The native foobar2000 component continues
+to use its host resampler. LSP/Bark/VQ, transient switching and PPC work remain.

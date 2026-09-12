@@ -59,6 +59,8 @@ jobs:
           $ErrorActionPreference = 'Stop'
           .\bin\x64\Release\vqf_encode.exe --list-modes
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .\bin\x64\Release\vqf_encode.exe --test-resample
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           .\bin\x64\Release\vqf_encode.exe --test-mdct
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           .\bin\x64\Release\vqf_encode.exe --test-roundtrip 0.4

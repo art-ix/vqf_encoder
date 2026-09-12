@@ -13,6 +13,8 @@
 #include <vector>
 
 #include "codec_tests.hpp"
+#include "resample.hpp"
+#include "resample_tests.hpp"
 
 namespace {
 
@@ -100,34 +102,12 @@ Wav read_wav(const std::string& path) {
     return w;
 }
 
-void resample_linear(const Wav& in, int out_rate, int out_ch, std::vector<float>& out) {
-    const double ratio = static_cast<double>(out_rate) / in.rate;
-    const size_t in_frames = in.pcm.size() / static_cast<size_t>(in.channels);
-    const size_t out_frames = static_cast<size_t>(std::llround(static_cast<double>(in_frames) * ratio));
-    out.assign(out_frames * static_cast<size_t>(out_ch), 0.0f);
-    for (size_t i = 0; i < out_frames; i++) {
-        const double src = static_cast<double>(i) / ratio;
-        size_t i0 = static_cast<size_t>(src);
-        if (i0 >= in_frames)
-            i0 = in_frames - 1;
-        size_t i1 = i0 + 1;
-        if (i1 >= in_frames)
-            i1 = in_frames - 1;
-        const float t = static_cast<float>(src - static_cast<double>(i0));
-        for (int c = 0; c < out_ch; c++) {
-            const int ic = std::min(c, in.channels - 1);
-            const float a = in.pcm[i0 * static_cast<size_t>(in.channels) + static_cast<size_t>(ic)];
-            const float b = in.pcm[i1 * static_cast<size_t>(in.channels) + static_cast<size_t>(ic)];
-            out[i * static_cast<size_t>(out_ch) + static_cast<size_t>(c)] = a + (b - a) * t;
-        }
-    }
-}
-
 void usage() {
     std::cerr << "usage: vqf_encode [options] input.wav output.vqf\n"
               << "       vqf_encode --list-modes\n"
               << "       vqf_encode --test-mdct\n"
               << "       vqf_encode --test-codec\n"
+              << "       vqf_encode --test-resample\n"
               << "       vqf_encode --test-roundtrip [seconds]\n"
               << "\noptions:\n"
               << "  -b, --bitrate KBPS   total bitrate; snaps to a legal TwinVQ mode\n"
@@ -257,6 +237,8 @@ int test_roundtrip(double seconds) {
 } // namespace
 
 int main(int argc, char** argv) try {
+    if (argc >= 2 && std::string(argv[1]) == "--test-resample")
+        return test_resample();
     if (argc >= 2 && std::string(argv[1]) == "--test-codec")
         return test_codec();
     if (argc >= 2 && std::string(argv[1]) == "--list-modes") {
@@ -347,7 +329,7 @@ int main(int argc, char** argv) try {
 
     std::vector<float> pcm;
     if (wav.rate != out_rate) {
-        resample_linear(wav, out_rate, wav.channels, pcm);
+        pcm = audio::resample(wav.pcm, wav.channels, wav.rate, out_rate);
         std::cerr << "resampled " << wav.rate << " -> " << out_rate << " Hz\n";
     } else {
         pcm = wav.pcm;
