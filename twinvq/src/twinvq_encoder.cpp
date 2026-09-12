@@ -1006,6 +1006,31 @@ void Encoder::quantize_main(const float* residual, const float* weights) {
                 }
             }
         }
+        auto refine_pair = [&]() {
+            for (int pass = 0; pass < 2; ++pass) {
+                for (int stage = 0; stage < 2; ++stage) {
+                    const int16_t* fixed = stage ? cb0 + best0 * cb_len : cb1 + best1 * cb_len;
+                    const int sign = stage ? s0 : s1;
+                    for (int j = 0; j < length; ++j) rest[j] = target[j] - sign * fixed[j];
+                    const int16_t* cb = stage ? cb1 : cb0;
+                    for (int a = 0; a < (stage ? n1 : n0); ++a) {
+                        for (int s = 0; s < ((stage ? sign1_en : sign0_en) ? 2 : 1); ++s) {
+                            const int sg = s ? -1 : 1;
+                            float e = 0;
+                            for (int j = 0; j < length; ++j) {
+                                const float d = rest[j] - sg * cb[a * cb_len + j];
+                                e += weight[j] * d * d;
+                            }
+                            if (e < best_e) {
+                                best_e = e;
+                                if (stage) { best1 = a; s1 = sg; }
+                                else { best0 = a; s0 = sg; }
+                            }
+                        }
+                    }
+                }
+            }
+        };
         for (int slot = 0; slot < beam_size; ++slot) {
             if (!beam_sign[slot]) continue;
             const int16_t* t0 = cb0 + beam_index[slot] * cb_len;
@@ -1030,31 +1055,64 @@ void Encoder::quantize_main(const float* residual, const float* weights) {
             // includes the old four-candidate solution and cannot increase
             // this fixed-target vector error merely by choosing a new seed.
             if ((slot + 1) % 4 != 0) continue;
-            for (int pass = 0; pass < 2; ++pass) {
-                for (int stage = 0; stage < 2; ++stage) {
-                    const int16_t* fixed = stage ? cb0 + best0 * cb_len : cb1 + best1 * cb_len;
-                    const int sign = stage ? s0 : s1;
-                    for (int j = 0; j < length; ++j) rest[j] = target[j] - sign * fixed[j];
-                    const int16_t* cb = stage ? cb1 : cb0;
-                    for (int a = 0; a < (stage ? n1 : n0); ++a) {
-                        for (int s = 0; s < ((stage ? sign1_en : sign0_en) ? 2 : 1); ++s) {
-                            const int sg = s ? -1 : 1;
-                            float e = 0;
-                            for (int j = 0; j < length; ++j) {
-                                const float d = rest[j] - sg * cb[a * cb_len + j];
-                                e += weight[j] * d * d;
-                            }
-                            if (e < best_e) {
-                                best_e = e;
-                                if (stage) { best1 = a; s1 = sg; }
-                                else { best0 = a; s0 = sg; }
-                            }
-                        }
+            refine_pair();
+
+        } // beam candidates and prefix refinement
+
+        // Independently seed from cb1 as well: nearest cb0 entries need not
+        // contain the best pair. Four reverse seeds supplement every beam size.
+        // Refine independently, then merge, preserving the forward winner and
+        // the smaller-beam inclusion property for fixed targets and weights.
+        const int forward0 = best0, forward1 = best1, forward_s0 = s0, forward_s1 = s1;
+        const float forward_error = best_e;
+        float reverse_error[4];
+        int reverse_index[4]{}, reverse_sign[4]{};
+        std::fill_n(reverse_error, 4, 1.0e30f);
+        for (int b = 0; b < n1; ++b) {
+            for (int sign = 0; sign < (sign1_en ? 2 : 1); ++sign) {
+                const int sg = sign ? -1 : 1;
+                float e = 0;
+                for (int j = 0; j < length; ++j) {
+                    const float d = target[j] - sg * cb1[b * cb_len + j];
+                    e += weight[j] * d * d;
+                }
+                for (int slot = 0; slot < 4; ++slot) {
+                    if (e >= reverse_error[slot]) continue;
+                    for (int k = 3; k > slot; --k) {
+                        reverse_error[k] = reverse_error[k - 1];
+                        reverse_index[k] = reverse_index[k - 1];
+                        reverse_sign[k] = reverse_sign[k - 1];
+                    }
+                    reverse_error[slot] = e; reverse_index[slot] = b; reverse_sign[slot] = sg;
+                    break;
+                }
+            }
+        }
+        best_e = 1.0e30f;
+        best0 = best1 = 0; s0 = s1 = 1;
+        for (int slot = 0; slot < 4; ++slot) {
+            if (!reverse_sign[slot]) continue;
+            for (int j = 0; j < length; ++j)
+                rest[j] = target[j] - reverse_sign[slot] * cb1[reverse_index[slot] * cb_len + j];
+            for (int a = 0; a < n0; ++a) {
+                for (int sign = 0; sign < (sign0_en ? 2 : 1); ++sign) {
+                    const int sg = sign ? -1 : 1;
+                    float e = 0;
+                    for (int j = 0; j < length; ++j) {
+                        const float d = rest[j] - sg * cb0[a * cb_len + j];
+                        e += weight[j] * d * d;
+                    }
+                    if (e < best_e) {
+                        best_e = e; best0 = a; s0 = sg;
+                        best1 = reverse_index[slot]; s1 = reverse_sign[slot];
                     }
                 }
             }
-
-        } // beam candidates and prefix refinement
+        }
+        refine_pair();
+        if (forward_error <= best_e) {
+            best0 = forward0; best1 = forward1; s0 = forward_s0; s1 = forward_s1;
+        }
 
         uint8_t c0 = static_cast<uint8_t>(best0);
         uint8_t c1 = static_cast<uint8_t>(best1);

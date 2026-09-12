@@ -5,6 +5,15 @@ runs after each prefix of four and retains its winner. Widening the beam retains
 the four-candidate refined solution for the same target and weights. This
 fixed-vector property does not guarantee perceptual improvement on every input.
 
+Every beam also includes an independent reverse search: select four seeds
+from the second codebook, search the first codebook for each, and apply the
+same two coordinate-refinement passes. Merge that result with the retained
+forward winner, preferring the forward result on ties. This explores a
+different set of pairs without increasing the signaled bit budget. It adds
+search work; it does not change the meaning of the configured forward beam.
+The reverse result is independent of forward beam breadth, preserving the
+smaller-beam candidate inclusion property for fixed targets and weights.
+
 CLI `--vq-beam auto` is the default. It chooses 16 candidates for 44.1 kHz stereo
 (80/96 kbps) and four for other modes. Explicit values 4, 8, 16 and 32 override
 it. API `Encoder::Config::vq_beam=0` selects auto. The foobar2000 component uses
