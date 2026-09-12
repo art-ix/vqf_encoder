@@ -108,12 +108,15 @@ void usage() {
               << "       vqf_encode --test-mdct\n"
               << "       vqf_encode --test-codec\n"
               << "       vqf_encode --test-codec-lsp\n"
+              << "       vqf_encode --test-codec-bark\n"
+              << "       vqf_encode --test-codec-search\n"
               << "       vqf_encode --test-resample\n"
               << "       vqf_encode --test-roundtrip [seconds]\n"
               << "\noptions:\n"
               << "  -b, --bitrate KBPS   total bitrate; snaps to a legal TwinVQ mode\n"
               << "                       (44.1 kHz stereo max is 96 = 48 kbps/ch; there is no 128)\n"
               << "  --title/--artist/--album/--year/--track/--genre/--comment TEXT\n"
+              << "  --bark-search       experimental Bark/history search (slower)\n"
               << "  --lsp-search        experimental frame-scored LSP search (slower)\n"
               << "  --no-delay           do not prepend priming frames\n"
               << "\nfoobar2000 Converter:\n"
@@ -241,6 +244,10 @@ int test_roundtrip(double seconds) {
 int main(int argc, char** argv) try {
     if (argc >= 2 && std::string(argv[1]) == "--test-resample")
         return test_resample();
+    if (argc >= 2 && std::string(argv[1]) == "--test-codec-bark")
+        return test_codec(false, true);
+    if (argc >= 2 && std::string(argv[1]) == "--test-codec-search")
+        return test_codec(true, true);
     if (argc >= 2 && std::string(argv[1]) == "--test-codec-lsp")
         return test_codec(true);
     if (argc >= 2 && std::string(argv[1]) == "--test-codec")
@@ -298,6 +305,8 @@ int main(int argc, char** argv) try {
             cfg.tags.genre = need("--genre");
         } else if (a == "--comment") {
             cfg.tags.comment = need("--comment");
+        } else if (a == "--bark-search") {
+            cfg.bark_search = true;
         } else if (a == "--lsp-search") {
             cfg.lsp_search = true;
         } else if (a == "--no-delay") {

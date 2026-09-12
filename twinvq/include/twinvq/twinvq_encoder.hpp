@@ -23,6 +23,8 @@ public:
         bool compensate_delay = true;
         // Experimental frame-scored LSP beam search; increases encode time.
         bool lsp_search = false;
+        // Experimental reconstruction-weighted Bark/history candidate.
+        bool bark_search = false;
     };
 
     explicit Encoder(const Config& cfg);
@@ -55,7 +57,8 @@ private:
     void mdct_channel(int ch, const float* time_2n, float* spec_n);
     void analyze_lpc(const float* time_n, float* lpc, float* lsp);
     void quantize_lsp(int ch, const float* target_lsp, float* rec_out, bool search);
-    void quantize_gain_bark(int ch, const float* spec, int block_size);
+    void quantize_gain_bark(int ch, const float* spec, int block_size,
+                            const float* lpc_env, bool search);
     void quantize_ppc(int ch, float* spec);
     void quantize_main(const float* residual, const float* weights);
     void write_frame_bits();

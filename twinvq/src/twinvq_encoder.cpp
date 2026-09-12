@@ -816,7 +816,8 @@ void Encoder::quantize_lsp(int ch, const float* target_lsp, float* rec_out, bool
         std::memcpy(rec_out, rec, sizeof(float) * static_cast<size_t>(order));
 }
 
-void Encoder::quantize_gain_bark(int ch, const float* spec, int block_size) {
+void Encoder::quantize_gain_bark(int ch, const float* spec, int block_size,
+                                 const float* lpc_env, bool search) {
     // Long frames only in this encoder: one gain, one bark set.
     double energy = 0;
     for (int i = 0; i < block_size; i++)
@@ -839,6 +840,7 @@ void Encoder::quantize_gain_bark(int ch, const float* spec, int block_size) {
     const int n_bit = mtab_->fmode[fi].bark_n_bit;
     const int n_ent = 1 << n_bit;
     std::vector<float> band(static_cast<size_t>(mtab_->fmode[fi].bark_env_size), 0.0f);
+    std::vector<double> band_weight(band.size(), 0.0);
     int pos = 0;
     int idx = 0;
     for (int i = 0; i < fw_cb_len; i++) {
@@ -854,29 +856,54 @@ void Encoder::quantize_gain_bark(int ch, const float* spec, int block_size) {
                                  ? static_cast<float>(std::sqrt(s / w)) / (gain * kTargetResidRms)
                                  : 1.0f;
             band[static_cast<size_t>(idx)] = st - 1.0f;
+            if (search)
+                for (int k = 0; k < w && pos + k < block_size; ++k)
+                    band_weight[idx] += static_cast<double>(lpc_env[pos+k]) * lpc_env[pos+k];
             pos += w;
         }
     }
 
-    for (int j = 0; j < bark_n_coef; j++) {
-        int best = 0;
-        float best_e = 1.0e30f;
-        for (int e = 0; e < n_ent; e++) {
-            float err = 0;
-            int id = j;
-            for (int i = 0; i < fw_cb_len; i++, id += bark_n_coef) {
-                const float v = mtab_->fmode[fi].bark_cb[fw_cb_len * e + i] * (1.0f / 4096.0f);
-                const float d = band[static_cast<size_t>(id)] - v;
-                err += d * d;
+    // The legacy fit is kept as a full-frame candidate by encode_frame.
+    // Trial history is read-only here; dec_bark_env commits it after selection.
+    double best_total = std::numeric_limits<double>::infinity();
+    uint8_t selected[kBarkNCoefMax]{};
+    int selected_history = 0;
+    for (int history = 0; history < (search ? 2 : 1); ++history) {
+        uint8_t indices[kBarkNCoefMax]{};
+        double total = 0;
+        for (int j = 0; j < bark_n_coef; j++) {
+            int best = 0;
+            double best_e = std::numeric_limits<double>::infinity();
+            for (int e = 0; e < n_ent; e++) {
+                // Float arithmetic in the legacy path preserves its tie breaks.
+                float legacy_error = 0;
+                double error = 0;
+                int id = j;
+                for (int i = 0; i < fw_cb_len; i++, id += bark_n_coef) {
+                    const float v = mtab_->fmode[fi].bark_cb[fw_cb_len * e + i] * (1.0f / 4096.0f);
+                    if (!search) {
+                        const float d = band[id] - v;
+                        legacy_error += d*d;
+                    } else {
+                        float st = history ? 0.72f * v + 0.28f * bark_hist_[fi][ch][id] + 1.0f : v + 1.0f;
+                        if (st < -1.0f) st = 1.0f; // Decoder reconstruction rule.
+                        const double d = static_cast<double>(band[id]) + 1.0 - st;
+                        error += band_weight[id] * d*d;
+                    }
+                }
+                if (!search) error = legacy_error;
+                if (error < best_e) { best_e = error; best = e; }
             }
-            if (err < best_e) {
-                best_e = err;
-                best = e;
-            }
+            indices[j] = static_cast<uint8_t>(best);
+            total += best_e;
         }
-        bark1_[ch][0][j] = static_cast<uint8_t>(best);
+        if (total < best_total) {
+            best_total = total; selected_history = history;
+            std::memcpy(selected, indices, sizeof(selected));
+        }
     }
-    bark_use_hist_[ch][0] = 0;
+    std::memcpy(bark1_[ch][0], selected, sizeof(selected));
+    bark_use_hist_[ch][0] = static_cast<uint8_t>(selected_history);
 }
 
 void Encoder::quantize_ppc(int ch, float* spec) {
@@ -1073,14 +1100,14 @@ void Encoder::encode_frame(const float* interleaved_n, bool /*force_flush*/) {
     };
     const auto prior_lsp = snapshot(lsp_hist_);
     const auto prior_bark = snapshot(bark_hist_);
-    auto trial = [&](bool search) {
+    auto trial = [&](bool lsp_search, bool bark_search) {
         restore(lsp_hist_, prior_lsp);
         restore(bark_hist_, prior_bark);
         spec = original_spec;
         std::vector<float> rec_lsps(target_lsps.size());
         for (int ch = 0; ch < channels_; ++ch)
             quantize_lsp(ch, target_lsps.data() + ch * kLspCoefsMax,
-                         rec_lsps.data() + ch * kLspCoefsMax, search);
+                         rec_lsps.data() + ch * kLspCoefsMax, lsp_search);
 
         std::vector<float> residual(static_cast<size_t>(channels_) * n);
         std::vector<float> weights(residual.size());
@@ -1108,7 +1135,7 @@ void Encoder::encode_frame(const float* interleaved_n, bool /*force_flush*/) {
             for (int i = 0; i < n; i++)
                 sp[i] -= ppc_add[static_cast<size_t>(i)];
 
-            quantize_gain_bark(ch, sp, n);
+            quantize_gain_bark(ch, sp, n, env.data(), bark_search);
 
             float gain[kChannelsMax * kSubblocksMax];
             dec_gain(FrameType::Long, gain);
@@ -1241,33 +1268,47 @@ void Encoder::encode_frame(const float* interleaved_n, bool /*force_flush*/) {
         return best_error;
     };
 
-    const double legacy_error = trial(false);
-    if (!cfg_.lsp_search) {
+    double selected_error = trial(false, false);
+    if (!cfg_.lsp_search && !cfg_.bark_search) {
         write_frame_bits();
         frames_written_++;
         return;
     }
-    const auto legacy_main = snapshot(main_coeffs_);
-    const auto legacy_gain = snapshot(gain_bits_);
-    const auto legacy_bark = snapshot(bark1_);
-    const auto legacy_bark_use = snapshot(bark_use_hist_);
-    const auto legacy_lpc1 = snapshot(lpc_idx1_);
-    const auto legacy_lpc2 = snapshot(lpc_idx2_);
-    const auto legacy_lpc_hist = snapshot(lpc_hist_idx_);
-    const auto legacy_lsp_state = snapshot(lsp_hist_);
-    const auto legacy_bark_state = snapshot(bark_hist_);
-    const double searched_error = trial(true);
-    if (!(searched_error < legacy_error)) {
-        restore(main_coeffs_, legacy_main);
-        restore(gain_bits_, legacy_gain);
-        restore(bark1_, legacy_bark);
-        restore(bark_use_hist_, legacy_bark_use);
-        restore(lpc_idx1_, legacy_lpc1);
-        restore(lpc_idx2_, legacy_lpc2);
-        restore(lpc_hist_idx_, legacy_lpc_hist);
-        restore(lsp_hist_, legacy_lsp_state);
-        restore(bark_hist_, legacy_bark_state);
+    auto selected_main = snapshot(main_coeffs_);
+    auto selected_gain = snapshot(gain_bits_);
+    auto selected_bark = snapshot(bark1_);
+    auto selected_bark_use = snapshot(bark_use_hist_);
+    auto selected_lpc1 = snapshot(lpc_idx1_);
+    auto selected_lpc2 = snapshot(lpc_idx2_);
+    auto selected_lpc_hist = snapshot(lpc_hist_idx_);
+    auto selected_lsp_state = snapshot(lsp_hist_);
+    auto selected_bark_state = snapshot(bark_hist_);
+    for (int lsp = 0; lsp <= static_cast<int>(cfg_.lsp_search); ++lsp) {
+        for (int bark = 0; bark <= static_cast<int>(cfg_.bark_search); ++bark) {
+            if (!lsp && !bark) continue;
+            const double error = trial(lsp != 0, bark != 0);
+            if (!(error < selected_error)) continue;
+            selected_error = error;
+            selected_main = snapshot(main_coeffs_);
+            selected_gain = snapshot(gain_bits_);
+            selected_bark = snapshot(bark1_);
+            selected_bark_use = snapshot(bark_use_hist_);
+            selected_lpc1 = snapshot(lpc_idx1_);
+            selected_lpc2 = snapshot(lpc_idx2_);
+            selected_lpc_hist = snapshot(lpc_hist_idx_);
+            selected_lsp_state = snapshot(lsp_hist_);
+            selected_bark_state = snapshot(bark_hist_);
+        }
     }
+    restore(main_coeffs_, selected_main);
+    restore(gain_bits_, selected_gain);
+    restore(bark1_, selected_bark);
+    restore(bark_use_hist_, selected_bark_use);
+    restore(lpc_idx1_, selected_lpc1);
+    restore(lpc_idx2_, selected_lpc2);
+    restore(lpc_hist_idx_, selected_lpc_hist);
+    restore(lsp_hist_, selected_lsp_state);
+    restore(bark_hist_, selected_bark_state);
     write_frame_bits();
     frames_written_++;
 }

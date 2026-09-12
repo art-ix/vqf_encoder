@@ -203,3 +203,19 @@ and encoding takes approximately twice as long. In the C++ API set
 `Encoder::Config::lsp_search = true`. The foobar2000 component keeps the default.
 Run `vqf_encode --test-codec-lsp` to check all 18 modes with this option.
 See [the audit](docs/encoder-quality-audit.md) for measured gains and regressions.
+
+
+### Experimental Bark/history search
+
+`vqf_encode --bark-search -b 96 input.wav output.vqf` evaluates an additional
+Bark candidate using LPC synthesis weights and both history settings. It is
+opt-in because music listening validation is still pending and encoding costs
+roughly twice as much. In the C++ API set `Encoder::Config::bark_search = true`.
+Combine with `--lsp-search` to evaluate all four ordinary/searched LSP/Bark
+combinations per frame, at a correspondingly higher cost. The selected frame's
+parameters and histories are committed together.
+
+`--test-codec-bark` tests Bark search in all 18 modes; `--test-codec-search`
+tests both options together. These tests also check that Bark history flags
+are actually transmitted. Default encoding and the foobar2000 component remain
+unchanged. Measurements and limitations are in [the audit](docs/encoder-quality-audit.md).

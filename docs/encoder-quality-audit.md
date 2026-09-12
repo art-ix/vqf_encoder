@@ -319,3 +319,72 @@ Further work should score temporal reconstruction/history consequences before
 promoting the option to default. Bark history search, block switching and PPC
 are still pending; this change evaluates existing Bark quantization as part of
 LSP selection but does not add new Bark candidates.
+
+
+## Implementation update: optional Bark/history search
+
+Baseline: 17399908376c9aa88f6bc9d0fd8449077f878e05.
+New CLI `--bark-search` / API `Encoder::Config::bark_search` is disabled by
+default. The existing LSP option can be used independently or jointly.
+
+The candidate generator weights each band's envelope fitting error by the sum
+of squared decoded LPC envelope values across its bins. This accounts for
+band width and synthesis amplification. It evaluates history off/on, fitting
+codebook indices separately for each history setting and using the decoder's
+0.28 long-frame history mixture and its special negative-envelope handling.
+It does not mutate history during candidate fitting.
+
+The proxy chooses one candidate per channel. The frame evaluator then compares
+ordinary and searched Bark after gain/main-VQ optimization using a common
+original input spectrum. If both LSP and Bark search are enabled, all four
+ordinary/searched combinations are evaluated from identical prior histories.
+It restores the winning gains, codebook indices and LSP/Bark histories together
+before writing one frame. The proxy is not an exhaustive search over all
+Bark codebooks in the final reconstruction objective, nor is this a masking
+model. Local frame selection does not guarantee a better whole-track score.
+
+Synthetic 44.1 kHz stereo / 96 kbps results, Bark search only, FFmpeg decoding:
+
+| Signal | Baseline SNR (dB) | Bark SNR (dB) | Delta (dB) | Time ratio |
+| --- | ---: | ---: | ---: | ---: |
+| tones | 14.469741 | 16.847175 | +2.377434 | 1.94x |
+| harmonics | 27.365305 | 27.433746 | +0.068441 | 2.08x |
+| attacks | 10.493565 | 10.493783 | +0.000218 | 1.86x |
+| noise | 4.600560 | 4.603685 | +0.003125 | 1.98x |
+| fade | 17.859006 | 17.882099 | +0.023093 | 1.94x |
+| identical | 17.728689 | 17.728691 | +0.000002 | 2.11x |
+| antiphase | 17.728689 | 17.728691 | +0.000002 | 2.15x |
+| left-only | 17.536308 | 17.536310 | +0.000002 | 1.94x |
+
+The tiny changes on several clips are effectively unchanged scores, not evidence
+of audible improvements. All files remain 25686 bytes / 90112 decoded frames.
+Timing is a single run per clip, approximately 1.9–2.2 times the baseline.
+The known FFmpeg end-of-file demux diagnostic persists in both versions.
+No music listening or combined-option performance comparison was performed.
+
+At 44.1 kHz stereo / 96 kbps the existing chirp test rose from 13.659 to
+15.3796 dB; at 80 kbps it rose from 13.0045 to 15.0569 dB. Across all 18
+codec cases most scores improve or are unchanged; the 22.05 kHz / 32 kbps
+mono case differs by approximately -0.0003 dB. This is not a universal
+quality guarantee. The Bark option remains opt-in pending broader validation.
+
+Validation on Linux:
+
+- MDCT/LPC, resampler, roundtrip and WAV-format tests passed.
+- All 18 modes passed for default, LSP only, Bark only, and combined options.
+  These include finite PCM, silence, gain, duration, repeated flush and
+  byte-identical whole-buffer/irregular-chunk output.
+- New bitstream inspection checks actual history flags: disabled paths write
+  zero flags; enabled tests must transmit at least one. This prevents the
+  stateful history path from silently remaining untested.
+- Default encodes of all eight benchmark sources are byte-identical to the
+  baseline, and Bark-enabled encodes match the measured candidate bytes.
+
+Reproduce the independent comparison:
+
+```sh
+python3 tools/benchmark_gain.py /path/to/baseline/vqf_encode bin/vqf_encode obj/bark-comparison --bark-search
+```
+
+Pending work includes temporal/perceptual evaluation, transient block switching
+and PPC pitch search. The current changes do not implement those features.

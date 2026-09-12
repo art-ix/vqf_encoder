@@ -28,7 +28,26 @@ std::vector<float> decode_test_file(const twinvq::Encoder& enc) {
     return result;
 }
 
-int test_codec(bool lsp_search = false) {
+// Inspect transmitted history flags, rather than merely exercising candidate
+// evaluation. Long frames place these immediately before gain/LSP/PPC fields.
+int bark_history_flags(const twinvq::Encoder& enc) {
+    const auto& mode = *enc.mode();
+    const int following = enc.channels() * (twinvq::kGainBits + mode.lsp_bit0 +
+        mode.lsp_bit1 + mode.lsp_split * mode.lsp_bit2 + mode.ppc_period_bit +
+        mode.ppc_shape_bit + mode.pgain_bit);
+    const int offset = enc.frame_bits() - following - enc.channels();
+    int total = 0;
+    for (int frame = 0; frame < enc.frames_written(); ++frame) {
+        for (int ch = 0; ch < enc.channels(); ++ch) {
+            const size_t bit = static_cast<size_t>(frame) * enc.frame_bits() + offset + ch;
+            total += (enc.data().at(bit / 8) >> (7 - (bit % 8))) & 1;
+        }
+    }
+    return total;
+}
+
+int test_codec(bool lsp_search = false, bool bark_search = false) {
+    int history_flags = 0;
     int mode_count = 0;
     const auto* modes = twinvq::legal_modes(mode_count);
     for (int m = 0; m < mode_count; ++m) for (int channels = 1; channels <= 2; ++channels) {
@@ -37,6 +56,7 @@ int test_codec(bool lsp_search = false) {
         cfg.bitrate_kbps = modes[m].kbps_per_channel * channels;
         cfg.channels = channels;
         cfg.lsp_search = lsp_search;
+        cfg.bark_search = bark_search;
         twinvq::Encoder whole(cfg), chunked(cfg);
         const int hop = whole.frame_samples(), frames = 7 * hop + 17;
         std::vector<float> pcm(frames * channels);
@@ -48,6 +68,7 @@ int test_codec(bool lsp_search = false) {
         }
         whole.feed(pcm.data(), frames);
         whole.flush();
+        history_flags += bark_history_flags(whole);
         int pos = 0;
         const int chunks[] = {1, 3, hop - 1, hop + 5};
         for (int k = 0; pos < frames; ++k) {
@@ -85,6 +106,9 @@ int test_codec(bool lsp_search = false) {
         std::cout << "  silence peak=" << peak << "\n";
         if (peak > 0.001f) throw std::runtime_error("excessive noise on silent input");
     }
+    if (bark_search ? history_flags == 0 : history_flags != 0)
+        throw std::runtime_error("Bark history flags do not exercise the requested mode");
+    std::cout << "transmitted Bark history flags=" << history_flags << "\n";
     std::cout << "codec regression tests passed\n";
     return 0;
 }
