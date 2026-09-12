@@ -191,3 +191,60 @@ results are not claimed by these local Linux measurements. These tests establish
 resampling behavior, not perceived quality improvements on music. Native-rate
 44.1 kHz inputs bypass this resampler. The native foobar2000 component continues
 to use its host resampler. LSP/Bark/VQ, transient switching and PPC work remain.
+
+
+## Implementation update: bounded gain/VQ refinement
+
+Baseline: b736ac05e51b8efb0237aa2d94c0ebf2f4dc7f93.
+The encoder now retains both the initial VQ solution and the previous encoder's
+fitted-gain/requantized solution. Candidate errors are compared in a fixed,
+synthesis-weighted MDCT objective against the same target. Up to two additional
+iterations search all 256 decoded gain values per channel for the current
+vectors and rerun VQ. The fixed-vector gain result is retained too. Trials stop
+when gains do not change or the objective does not improve. The best complete
+pair of gains and main-codebook indices is restored before writing the frame.
+LSP/Bark/PPC histories are unaffected by these trials.
+
+This prevents a candidate with higher modeled frame error from replacing a
+better candidate, including the legacy result. It is not a guarantee of lower
+PCM error in every time interval or improved perceptual quality: overlap-add,
+finite precision and auditory masking are distinct from this objective.
+
+Validation on Linux:
+
+- MDCT/LPC tests, all 18 codec modes (including chunked feed and silence),
+  resampler tests and WAV-format tests passed.
+- The 0.5-second roundtrip SNR rose from 20.3841 to 21.2856 dB, with zero lag.
+- Independent FFmpeg decoding of eight two-second synthetic stereo clips at
+  44.1 kHz / 96 kbps yielded the following aligned, fixed-polarity PCM scores.
+  No delay search or gain normalization was applied; 4096 samples at each end
+  were excluded. These are synthetic diagnostics, not music listening results.
+
+| Signal | Before SNR (dB) | After SNR (dB) | Delta (dB) | Encode time ratio |
+| --- | ---: | ---: | ---: | ---: |
+| tones | 14.351 | 14.470 | +0.118 | 1.02x |
+| harmonics | 27.365 | 27.365 | +0.000 | 1.09x |
+| attacks | 9.937 | 10.494 | +0.557 | 1.89x |
+| noise | 4.333 | 4.601 | +0.268 | 1.94x |
+| fade | 17.859 | 17.859 | +0.000 | 1.06x |
+| identical | 17.652 | 17.729 | +0.077 | 1.11x |
+| antiphase | 17.652 | 17.729 | +0.077 | 1.04x |
+| left-only | 17.536 | 17.536 | +0.000 | 1.00x |
+
+All compared files are 25686 bytes and decode to 90112 frames including tail
+padding. FFmpeg still reports the known end-of-file demux error for both
+versions; decoded samples are finite. Timing is a single run per clip and is
+indicative, not a controlled performance benchmark. Difficult attack/noise
+inputs approach twice the previous encoding time. No listening-quality claim
+is made from these SNR results.
+
+Reproduce with separately built baseline and candidate executables:
+
+```sh
+python3 tools/benchmark_gain.py /path/to/baseline/vqf_encode bin/vqf_encode
+```
+
+The script requires Python and FFmpeg only for measurement; neither is linked
+into the encoder. It checks finite decoded output, unchanged encoded size and
+decoded duration, and writes its generated clips/results under obj by default.
+LSP/Bark search, transient block switching and PPC remain subsequent work.

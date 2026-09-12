@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <stdexcept>
 
 namespace twinvq {
@@ -1041,7 +1042,44 @@ void Encoder::encode_frame(const float* interleaved_n, bool /*force_flush*/) {
         }
     }
 
+    // All candidates are scored against the same target and synthesis envelope.
+    // Keep the previous two-search encoder result among the candidates: a fresh
+    // approximate VQ search is not guaranteed to improve on its predecessor.
+    const auto target = residual;
+    const auto synthesis_weights = weights;
+    float base_gain[kChannelsMax * kSubblocksMax];
+    dec_gain(FrameType::Long, base_gain);
+    uint8_t best_coeffs[sizeof(main_coeffs_)]{};
+    uint8_t best_gains[sizeof(gain_bits_)]{};
+    double best_error = std::numeric_limits<double>::infinity();
+    const auto& main_mode = mtab_->fmode[static_cast<int>(FrameType::Long)];
+    std::vector<float> candidate(target.size());
+    auto retain_candidate = [&]() {
+        dequant(main_coeffs_, candidate.data(), FrameType::Long,
+                main_mode.cb0, main_mode.cb1, main_mode.cb_len_read);
+        float gains[kChannelsMax * kSubblocksMax];
+        dec_gain(FrameType::Long, gains);
+        double error = 0;
+        for (int ch = 0; ch < channels_; ++ch) {
+            const double ratio = static_cast<double>(gains[ch]) / base_gain[ch];
+            for (int i = ch * n; i < (ch + 1) * n; ++i) {
+                const double d = target[i] - ratio * candidate[i];
+                error += synthesis_weights[i] * d * d;
+            }
+        }
+        if (error < best_error) {
+            best_error = error;
+            std::memcpy(best_coeffs, main_coeffs_, sizeof(main_coeffs_));
+            std::memcpy(best_gains, gain_bits_, sizeof(gain_bits_));
+        }
+    };
+    auto restore_best = [&]() {
+        std::memcpy(main_coeffs_, best_coeffs, sizeof(main_coeffs_));
+        std::memcpy(gain_bits_, best_gains, sizeof(gain_bits_));
+    };
+
     quantize_main(residual.data(), weights.data());
+    retain_candidate();
     // Fit the transmitted channel gain to the actual selected vectors.
     // A nominal codebook RMS alone cannot predict the energy of their sum.
     std::vector<float> reconstructed(residual.size());
@@ -1069,6 +1107,56 @@ void Encoder::encode_frame(const float* interleaved_n, bool /*force_flush*/) {
         }
     }
     quantize_main(residual.data(), weights.data());
+    retain_candidate();
+    restore_best();
+
+    // Two bounded gain/VQ iterations. For fixed vectors the gain objective is
+    // quadratic, so enumerate the 256 decoder-reconstructed gains cheaply.
+    // This includes both neighbors of the continuous optimum, unlike rounding
+    // in the nonlinear mu-law domain. Keep the fixed-vector candidate as well
+    // as the result of each new VQ search.
+    for (int pass = 0; pass < 2; ++pass) {
+        const double previous_error = best_error;
+        dequant(main_coeffs_, candidate.data(), FrameType::Long,
+                main_mode.cb0, main_mode.cb1, main_mode.cb_len_read);
+        bool changed = false;
+        for (int ch = 0; ch < channels_; ++ch) {
+            double cross = 0, energy = 0;
+            for (int i = ch * n; i < (ch + 1) * n; ++i) {
+                cross += static_cast<double>(synthesis_weights[i]) * target[i] * candidate[i];
+                energy += static_cast<double>(synthesis_weights[i]) * candidate[i] * candidate[i];
+            }
+            if (energy <= 1.0e-20) continue;
+            const double optimum = std::max(0.0, cross / energy);
+            int selected = gain_bits_[ch];
+            double distance = std::numeric_limits<double>::infinity();
+            const float step = kAmpMax / static_cast<float>((1 << kGainBits) - 1);
+            for (int q = 0; q < (1 << kGainBits); ++q) {
+                const float gain = (1.0f / 8192.0f) *
+                    mulawinv(step * 0.5f + step * q, kAmpMax, kMulawMu);
+                const double d = std::fabs(static_cast<double>(gain) / base_gain[ch] - optimum);
+                if (d < distance) { distance = d; selected = q; }
+            }
+            changed |= selected != gain_bits_[ch];
+            gain_bits_[ch] = static_cast<uint8_t>(selected);
+        }
+        if (!changed) break;
+        retain_candidate();
+        float gains[kChannelsMax * kSubblocksMax];
+        dec_gain(FrameType::Long, gains);
+        for (int ch = 0; ch < channels_; ++ch) {
+            const float ratio = gains[ch] / base_gain[ch];
+            for (int i = ch * n; i < (ch + 1) * n; ++i) {
+                residual[i] = target[i] / ratio;
+                weights[i] = synthesis_weights[i] * ratio * ratio;
+            }
+        }
+        quantize_main(residual.data(), weights.data());
+        retain_candidate();
+        restore_best();
+        if (best_error >= previous_error) break;
+    }
+    restore_best();
     write_frame_bits();
     frames_written_++;
 }
