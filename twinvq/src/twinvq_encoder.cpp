@@ -1060,14 +1060,15 @@ void Encoder::quantize_main(const float* residual, const float* weights) {
         } // beam candidates and prefix refinement
 
         // Independently seed from cb1 as well: nearest cb0 entries need not
-        // contain the best pair. Four reverse seeds supplement every beam size.
+        // contain the best pair. Eight reverse seeds supplement every beam size.
         // Refine independently, then merge, preserving the forward winner and
         // the smaller-beam inclusion property for fixed targets and weights.
         const int forward0 = best0, forward1 = best1, forward_s0 = s0, forward_s1 = s1;
         const float forward_error = best_e;
-        float reverse_error[4];
-        int reverse_index[4]{}, reverse_sign[4]{};
-        std::fill_n(reverse_error, 4, 1.0e30f);
+        constexpr int reverse_beam = 8;
+        float reverse_error[reverse_beam];
+        int reverse_index[reverse_beam]{}, reverse_sign[reverse_beam]{};
+        std::fill_n(reverse_error, reverse_beam, 1.0e30f);
         for (int b = 0; b < n1; ++b) {
             for (int sign = 0; sign < (sign1_en ? 2 : 1); ++sign) {
                 const int sg = sign ? -1 : 1;
@@ -1076,9 +1077,9 @@ void Encoder::quantize_main(const float* residual, const float* weights) {
                     const float d = target[j] - sg * cb1[b * cb_len + j];
                     e += weight[j] * d * d;
                 }
-                for (int slot = 0; slot < 4; ++slot) {
+                for (int slot = 0; slot < reverse_beam; ++slot) {
                     if (e >= reverse_error[slot]) continue;
-                    for (int k = 3; k > slot; --k) {
+                    for (int k = reverse_beam - 1; k > slot; --k) {
                         reverse_error[k] = reverse_error[k - 1];
                         reverse_index[k] = reverse_index[k - 1];
                         reverse_sign[k] = reverse_sign[k - 1];
@@ -1090,7 +1091,8 @@ void Encoder::quantize_main(const float* residual, const float* weights) {
         }
         best_e = 1.0e30f;
         best0 = best1 = 0; s0 = s1 = 1;
-        for (int slot = 0; slot < 4; ++slot) {
+        const int reverse_count = std::min(reverse_beam, n1 * (sign1_en ? 2 : 1));
+        for (int slot = 0; slot < reverse_count; ++slot) {
             if (!reverse_sign[slot]) continue;
             for (int j = 0; j < length; ++j)
                 rest[j] = target[j] - reverse_sign[slot] * cb1[reverse_index[slot] * cb_len + j];
@@ -1108,8 +1110,8 @@ void Encoder::quantize_main(const float* residual, const float* weights) {
                     }
                 }
             }
+            if ((slot + 1) % 4 == 0 || slot + 1 == reverse_count) refine_pair();
         }
-        refine_pair();
         if (forward_error <= best_e) {
             best0 = forward0; best1 = forward1; s0 = forward_s0; s1 = forward_s1;
         }

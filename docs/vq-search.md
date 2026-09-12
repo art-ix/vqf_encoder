@@ -5,9 +5,12 @@ runs after each prefix of four and retains its winner. Widening the beam retains
 the four-candidate refined solution for the same target and weights. This
 fixed-vector property does not guarantee perceptual improvement on every input.
 
-Every beam also includes an independent reverse search: select four seeds
+Every beam also includes an independent reverse search: select eight seeds
 from the second codebook, search the first codebook for each, and apply the
-same two coordinate-refinement passes. Merge that result with the retained
+same two coordinate-refinement passes after each prefix of four. This keeps
+the former four-seed result as a candidate before considering the extra
+seeds. If a codebook has fewer candidates, refine at its last valid seed.
+Merge that result with the retained
 forward winner, preferring the forward result on ties. This explores a
 different set of pairs without increasing the signaled bit budget. It adds
 search work; it does not change the meaning of the configured forward beam.
