@@ -1,22 +1,38 @@
 # Transient block switching: implementation prerequisites
 
-Status: offline window analysis/synthesis validation implemented. No short/medium block encoder
-is enabled by this change. Do not advertise pre-echo improvement from VQ SNR.
+Status: experimental fixed short/medium encoding is implemented. Automatic
+transient detection and adaptive scheduling are still pending.
 
-## Current blockers in this repository
+## Fixed-block implementation
 
-- `encode_frame` forces window type 0 and Long. `mdct_channel` uses the same
-  2N sine window and N-bin transform every hop.
-- `quantize_main` selects Long codebooks and Long permutation/bit partitions.
-- `quantize_gain_bark` produces one envelope and one channel gain. Short and
-  medium frames require separate subblock envelopes and sub-gains.
-- The current gain/VQ candidate scorer assumes one gain ratio for an entire
-  channel and PPC subtraction in every frame. PPC must only be used in Long.
-- Decoder support for nine window types already exists. Its synthesis changes
-  overlap position and window size by type; changing only the encoded window
-  bits will not produce a correct analysis transform.
-- `bark_history_flags` in codec tests explicitly assumes Long frame layout and
-  must be replaced with a window-aware parser when switching is implemented.
+Use `--block-mode short` or `--block-mode medium`; the default is `long`.
+The C++ API exposes `Encoder::Config::block_mode` with `Encoder::BlockMode`.
+Native integrations retain the Long default. These are evaluation modes,
+not a recommendation to encode an entire music track with short windows.
+
+- Production analysis transposes decoder overlap/copy operations using two
+  adjacent PCM hops and the next window geometry. It is compared against the
+  independent whole-schedule oracle below. No additional PCM delay is added.
+- The fixed schedule starts with window 0, repeats 2 (Short) or 8 (Medium),
+  and flushes with 3 or 5 respectively. The final partial input hop is padded
+  before the exit frame. First-frame priming and output length are preserved.
+- LPC is transmitted once per channel; its envelope is reconstructed at the
+  subblock resolution. Bark indices, history and gains are selected per subblock.
+  History follows decoder order and is committed only for the winning trial.
+- Global and sub-gain combinations are searched jointly in decoder units.
+  Two main-VQ passes retain the best reconstruction, including a final gain
+  fit. VQ codebooks, permutations and bit partitions follow the frame type.
+  PPC is used only for Long frames. Candidate snapshots include sub-gains.
+- Optional masking weights are computed independently per subblock, with
+  the matching frequency resolution and both stereo channels.
+- Each frame must write exactly its specified bit count before byte packing.
+  The default Long path remains the control for bit-identical comparisons.
+
+`--test-codec-short` and `--test-codec-medium` cover all 18 mode/channel
+combinations, fixed window schedules, history flags, chunked input, flush,
+finite output, silence and reconstruction gain. Both use masking enabled.
+Targeted external decoding also covers 80 kbps Short and 96 kbps Medium.
+These checks establish implementation correctness, not subjective improvement.
 
 ## Implementation order and gates
 
@@ -73,7 +89,6 @@ nine window IDs decode to byte-identical PCM before and after extraction in
 all 18 mode/channel combinations. No music material or music-derived results
 are included here.
 
-Next: derive bounded-lookahead analysis from this oracle, then implement
-per-subblock Bark envelopes, gains and frame-type-dependent VQ/scoring before
-enabling an experimental block-switching path. The production encoder still
-emits long frames only; this stage does not establish a pre-echo improvement.
+Next: add a stereo-aware transient detector and adaptive legal window
+scheduling, then evaluate attack/pre-echo behavior and listening quality.
+Fixed-block support does not establish a pre-echo improvement by itself.

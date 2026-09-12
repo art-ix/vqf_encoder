@@ -45,6 +45,17 @@ float roundtrip(const ModeTab& mode, const std::vector<int>& schedule,
         for (int i = prefix; i < n; ++i) state[f + 1][i - prefix] += signal[f * n + i];
         analyze_window(layout[f], state[f + 1].data(), state[f].data() + last, half[f].data());
     }
+    // Compare the bounded production analysis against the independent
+    // full-schedule oracle, including transitions and the zero-padded tail.
+    for (int f = 0; f < frames; ++f) {
+        std::vector<float> pair(2 * n), actual(n);
+        std::copy_n(signal.data() + f * n, n, pair.data());
+        if (f + 1 < frames) std::copy_n(signal.data() + (f + 1) * n, n, pair.data() + n);
+        const auto next = f + 1 < frames ? layout[f + 1] : window_layout(mode, FrameType::Long, 0);
+        analyze_window_pair(layout[f], next, pair.data(), actual.data());
+        for (int i = 0; i < n; ++i)
+            if (std::fabs(actual[i] - half[f][i]) > 2.0e-6f) return INFINITY;
+    }
     if (synthesis_schedule) {
         layout.clear();
         for (int type : *synthesis_schedule) layout.push_back(window_layout(mode, window_frame_type(type), type));

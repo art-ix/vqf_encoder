@@ -48,11 +48,13 @@ passband, stopband, delay and boundary handling. Compare against an independent
 resampler using passband sweeps, above-Nyquist tones and impulses.
 The foobar2000 component uses the host resampler; this finding applies to CLI.
 
-### 2. Only long blocks are encoded
+### 2. Automatic transient block selection is missing
 
 Location: twinvq/src/twinvq_encoder.cpp, encode_frame near 958,
 quantize_gain_bark near 757 and quantize_main near 828.
-Every frame sets window_type=0 and FrameType::Long. At 44.1 kHz the hop is
+The default path uses window type 0 and Long frames. Experimental fixed
+short/medium encoding is now available with `--block-mode`; see
+[implementation status](transient-block-implementation.md). At 44.1 kHz the hop is
 2048 samples (46.44 ms), and the analysis window spans 4096 (92.88 ms).
 This creates a structural risk of pre-echo and smeared attacks on percussion,
 plucked strings and abrupt starts. Actual audibility remains to be measured.

@@ -242,5 +242,17 @@ measurement results are included in the repository.
 gain refinement and frame-candidate selection. It is **off by default**;
 `--no-psychoacoustic` explicitly restores the existing objective. Frame sizes
 and decoder compatibility are unchanged. This is an initial model awaiting
-listening-based tuning, without temporal masking or short-block switching.
+listening-based tuning, without temporal masking or automatic short-block switching.
 See [model details and tests](docs/psychoacoustic-model.md).
+
+
+### Experimental short and medium blocks
+
+`--block-mode short` and `--block-mode medium` select fixed subblock encoding
+for evaluation. The default `--block-mode long` retains the existing path.
+The C++ setting is `Encoder::Config::block_mode` (`Encoder::BlockMode`).
+These modes implement subblock analysis, Bark/gain quantization and VQ;
+automatic transient detection is still pending. Fixed short blocks are not
+recommended as a general music-quality setting.
+
+See [implementation and validation](docs/transient-block-implementation.md).

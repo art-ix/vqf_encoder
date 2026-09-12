@@ -4,6 +4,8 @@
 #include "twinvq_mdct.hpp"
 #include <array>
 #include <cstring>
+#include <algorithm>
+#include <vector>
 
 namespace twinvq {
 
@@ -67,6 +69,45 @@ inline void synthesize_window(const WindowLayout& layout, const float* half,
         std::memcpy(current + b.output + b.overlap, input + b.overlap / 2,
                     (layout.block_size - b.overlap / 2) * sizeof(float));
     }
+}
+
+// Adjoint of synthesis. Work backwards because a later subblock overwrites
+// part of an earlier copy. Buffers contain PCM gradients, not decoder state.
+inline void analyze_window_adjoint(const WindowLayout& layout, float* current,
+                                   float* previous, float* half) {
+    for (int j = layout.blocks - 1; j >= 0; --j) {
+        const auto& b = layout.block[j];
+        float* input = half + j * layout.block_size;
+        float* prev = j == 0 ? previous : half;
+        for (int i = 0; i < layout.block_size - b.overlap / 2; ++i) {
+            input[b.overlap / 2 + i] += current[b.output + b.overlap + i];
+            current[b.output + b.overlap + i] = 0;
+        }
+        const float* win = sine_window_cached(b.overlap);
+        for (int i = 0; i < b.overlap / 2; ++i) {
+            const int r = b.overlap - 1 - i;
+            const float lo = current[b.output + i], hi = current[b.output + r];
+            prev[b.previous + i] += lo * win[r] + hi * win[i];
+            input[b.overlap / 2 - 1 - i] += -lo * win[i] + hi * win[r];
+            current[b.output + i] = current[b.output + r] = 0;
+        }
+    }
+}
+
+// One frame's analysis needs only its PCM hop and the following hop, plus
+// the next window geometry. No whole-track buffering or additional PCM delay.
+inline void analyze_window_pair(const WindowLayout& layout, const WindowLayout& next,
+                                const float* pcm_2n, float* half) {
+    const int n = layout.size;
+    std::vector<float> current(2 * n), future(2 * n), previous(2 * n), unused(n);
+    const int prefix = n - next.output_size;
+    for (int i = 0; i < prefix; ++i) current[layout.output_size + i] = pcm_2n[n + i];
+    for (int i = prefix; i < n; ++i) future[i - prefix] = pcm_2n[n + i];
+    analyze_window_adjoint(next, future.data(), current.data() + layout.output_size, unused.data());
+    const int start = n - layout.output_size;
+    for (int i = start; i < n; ++i) current[i - start] += pcm_2n[i];
+    std::fill_n(half, n, 0.0f);
+    analyze_window_adjoint(layout, current.data(), previous.data(), half);
 }
 
 // Unquantized, offline analysis/synthesis oracle for transition development.

@@ -13,6 +13,7 @@ bool lpc_analysis_self_test(float* max_abs_err);
 
 class Encoder {
 public:
+    enum class BlockMode { Long, Short, Medium };
     struct Config {
         int sample_rate = 44100;
         int channels = 2;
@@ -30,6 +31,8 @@ public:
         int vq_beam = 0;
         // Experimental relative simultaneous-masking model; opt in for evaluation.
         bool psychoacoustic = false;
+        // Experimental fixed blocks for evaluation; no transient detector.
+        BlockMode block_mode = BlockMode::Long;
     };
 
     explicit Encoder(const Config& cfg);
@@ -61,10 +64,11 @@ private:
     void construct_perm_table(FrameType ftype);
     void encode_frame(const float* interleaved_n, bool force_flush);
     void mdct_channel(int ch, const float* time_2n, float* spec_n);
+    void fit_subblock_gains(int ch, const double* target, const double* weight);
     void analyze_lpc(const float* time_n, float* lpc, float* lsp);
     void quantize_lsp(int ch, const float* target_lsp, float* rec_out, LspSearch search);
     void quantize_gain_bark(int ch, const float* spec, int block_size,
-                            const float* lpc_env, bool search, const float* perceptual);
+                            const float* lpc_env, bool search, const float* perceptual, int subblock = 0);
     void quantize_ppc(int ch, float* spec);
     void quantize_main(const float* residual, const float* weights);
     void write_frame_bits();
@@ -107,6 +111,7 @@ private:
     bool flushed_ = false;
 
     int window_type_ = 0;
+    int next_window_type_ = 0;
     FrameType ftype_ = FrameType::Long;
     uint8_t main_coeffs_[1024]{};
     uint8_t ppc_coeffs_[256]{};

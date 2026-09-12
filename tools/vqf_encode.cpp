@@ -126,6 +126,7 @@ void usage() {
               << "  --no-lsp-search     disable LSP search\n"
               << "  --psychoacoustic    experimental masking weights (default: off)\n"
               << "  --no-psychoacoustic disable masking weights\n"
+              << "  --block-mode MODE  experimental fixed blocks: long (default), short, medium\n"
               << "  --vq-beam N        VQ breadth: auto (default), 4, 8, 16, 32\n"
               << "  --no-delay           do not prepend priming frames\n"
               << "\nfoobar2000 Converter:\n"
@@ -263,6 +264,10 @@ int main(int argc, char** argv) try {
         return test_codec(true, false);
     if (argc >= 2 && std::string(argv[1]) == "--test-codec-psychoacoustic")
         return test_codec(true, true, true);
+    if (argc >= 2 && std::string(argv[1]) == "--test-codec-short")
+        return test_codec(true, true, true, twinvq::Encoder::BlockMode::Short);
+    if (argc >= 2 && std::string(argv[1]) == "--test-codec-medium")
+        return test_codec(true, true, true, twinvq::Encoder::BlockMode::Medium);
     if (argc >= 2 && std::string(argv[1]) == "--test-codec")
         return test_codec();
     if (argc >= 2 && std::string(argv[1]) == "--list-modes") {
@@ -330,6 +335,12 @@ int main(int argc, char** argv) try {
             cfg.psychoacoustic = true;
         } else if (a == "--no-psychoacoustic") {
             cfg.psychoacoustic = false;
+        } else if (a == "--block-mode") {
+            const std::string value = need("--block-mode");
+            if (value == "long") cfg.block_mode = twinvq::Encoder::BlockMode::Long;
+            else if (value == "short") cfg.block_mode = twinvq::Encoder::BlockMode::Short;
+            else if (value == "medium") cfg.block_mode = twinvq::Encoder::BlockMode::Medium;
+            else throw std::invalid_argument("block mode must be long, short or medium");
         } else if (a == "--vq-beam") {
             const std::string value = need("--vq-beam");
             if (value == "auto") cfg.vq_beam = 0;

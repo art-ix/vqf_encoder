@@ -28,27 +28,32 @@ std::vector<float> decode_test_file(const twinvq::Encoder& enc) {
     return result;
 }
 
-// Inspect transmitted history flags, rather than merely exercising candidate
-// evaluation. Long frames place these immediately before gain/LSP/PPC fields.
+// Read each window before locating history flags; subblocks add gain fields
+// and omit PPC. Encoder enforces exact, unpadded frame bit counts.
 int bark_history_flags(const twinvq::Encoder& enc) {
     const auto& mode = *enc.mode();
-    const int following = enc.channels() * (twinvq::kGainBits + mode.lsp_bit0 +
-        mode.lsp_bit1 + mode.lsp_split * mode.lsp_bit2 + mode.ppc_period_bit +
-        mode.ppc_shape_bit + mode.pgain_bit);
-    const int offset = enc.frame_bits() - following - enc.channels();
+    auto bit = [&](size_t pos) { return (enc.data().at(pos / 8) >> (7 - pos % 8)) & 1; };
     int total = 0;
     for (int frame = 0; frame < enc.frames_written(); ++frame) {
-        for (int ch = 0; ch < enc.channels(); ++ch) {
-            const size_t bit = static_cast<size_t>(frame) * enc.frame_bits() + offset + ch;
-            total += (enc.data().at(bit / 8) >> (7 - (bit % 8))) & 1;
-        }
+        const size_t start = static_cast<size_t>(frame) * enc.frame_bits();
+        int window = 0;
+        for (int i = 0; i < twinvq::kWindowTypeBits; ++i) window = window * 2 + bit(start + i);
+        if (window > 8) throw std::runtime_error("invalid encoded window");
+        const int types[] = {2, 2, 0, 2, 1, 2, 2, 1, 1};
+        const int type = types[window], sub = mode.fmode[type].sub;
+        const int following = enc.channels() * (twinvq::kGainBits + mode.lsp_bit0 + mode.lsp_bit1 +
+            mode.lsp_split * mode.lsp_bit2 + (type == 2 ? mode.ppc_period_bit + mode.ppc_shape_bit + mode.pgain_bit
+                                                       : sub * twinvq::kSubGainBits));
+        const int offset = enc.frame_bits() - following - enc.channels() * sub;
+        for (int j = 0; j < enc.channels() * sub; ++j) total += bit(start + offset + j);
     }
     return total;
 }
 
 int test_codec(bool lsp_search = twinvq::Encoder::Config{}.lsp_search,
                bool bark_search = twinvq::Encoder::Config{}.bark_search,
-               bool psychoacoustic = false) {
+               bool psychoacoustic = false,
+               twinvq::Encoder::BlockMode blocks = twinvq::Encoder::BlockMode::Long) {
     int history_flags = 0;
     int mode_count = 0;
     const auto* modes = twinvq::legal_modes(mode_count);
@@ -60,6 +65,7 @@ int test_codec(bool lsp_search = twinvq::Encoder::Config{}.lsp_search,
         cfg.lsp_search = lsp_search;
         cfg.bark_search = bark_search;
         cfg.psychoacoustic = psychoacoustic;
+        cfg.block_mode = blocks;
         twinvq::Encoder whole(cfg), chunked(cfg);
         const int hop = whole.frame_samples(), frames = 7 * hop + 17;
         std::vector<float> pcm(frames * channels);
@@ -72,6 +78,17 @@ int test_codec(bool lsp_search = twinvq::Encoder::Config{}.lsp_search,
         whole.feed(pcm.data(), frames);
         whole.flush();
         history_flags += bark_history_flags(whole);
+        for (int f = 0; f < whole.frames_written(); ++f) {
+            int window = 0;
+            for (int k = 0; k < twinvq::kWindowTypeBits; ++k) {
+                const size_t b = static_cast<size_t>(f) * whole.frame_bits() + k;
+                window = window * 2 + ((whole.data().at(b / 8) >> (7 - b % 8)) & 1);
+            }
+            const bool short_mode = blocks == twinvq::Encoder::BlockMode::Short;
+            const int expected = blocks == twinvq::Encoder::BlockMode::Long || f == 0 ? 0
+                               : f == whole.frames_written() - 1 ? (short_mode ? 3 : 5) : (short_mode ? 2 : 8);
+            if (window != expected) throw std::runtime_error("incorrect fixed-block window schedule");
+        }
         int pos = 0;
         const int chunks[] = {1, 3, hop - 1, hop + 5};
         for (int k = 0; pos < frames; ++k) {
@@ -102,7 +119,7 @@ int test_codec(bool lsp_search = twinvq::Encoder::Config{}.lsp_search,
             throw std::runtime_error("roundtrip quality/gain regression");
         // This deterministic chirp previously scored about 27 dB with angular
         // LSP search alone. Protect the spectral candidate's measured gain.
-        if (lsp_search && cfg.sample_rate == 16000 && channels == 1 && snr < 30)
+        if (blocks == twinvq::Encoder::BlockMode::Long && lsp_search && cfg.sample_rate == 16000 && channels == 1 && snr < 30)
             throw std::runtime_error("spectral LSP quality regression");
         twinvq::Encoder silent(cfg);
         std::fill(pcm.begin(), pcm.end(), 0.0f);
