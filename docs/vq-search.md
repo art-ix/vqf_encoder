@@ -45,6 +45,11 @@ separate transform/subblock work required before enabling short frames.
 
 ## Final gain refinement
 
+Allow up to three gain/VQ iterations, stopping when the gain is unchanged or
+the retained error stops decreasing. The third iteration retains the former
+two-iteration result, including its final gain fit, before trying another VQ
+search. This adds search work only when the second iteration has not settled.
+
 After the bounded gain/VQ iterations, refit each transmitted channel gain to
 the final retained codevectors. A last VQ search can change the vectors after
 the preceding gain fit. Ending at that point leaves a potentially stale gain.

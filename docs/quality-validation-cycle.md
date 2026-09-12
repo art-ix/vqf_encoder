@@ -6,7 +6,7 @@ suite after every three completed stages. Start this cycle after `72a5a15`.
 | Stage | Work | Full regression |
 | --- | --- | --- |
 | 1 | Independent reverse-codebook VQ seeds | Deferred |
-| 2 | Pending | Deferred |
+| 2 | Third bounded gain/VQ iteration with candidate retention | Deferred |
 | 3 | Pending | Required before completing stage 3 |
 
 Do not count an abandoned experiment as a completed stage. Record subsequent

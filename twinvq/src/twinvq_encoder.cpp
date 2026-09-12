@@ -1361,8 +1361,9 @@ void Encoder::encode_frame(const float* interleaved_n, bool /*force_flush*/) {
             return changed;
         };
 
-        // Preserve the two bounded gain/VQ searches and their retained winners.
-        for (int pass = 0; pass < 2; ++pass) {
+        // Allow one more bounded gain/VQ search when the fitted gain still changes.
+        // Retention includes the former two-pass result and its final gain fit.
+        for (int pass = 0; pass < 3; ++pass) {
             const double previous_error = best_error;
             const bool changed = fit_candidate_gain();
             if (!changed) break;
