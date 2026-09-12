@@ -44,7 +44,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          msbuild vqf_encoder.sln /p:Configuration=Release /p:Platform=x64 /m /nologo
+          msbuild vqf_encoder.sln /p:Configuration=Release /p:Platform=x64 /p:VCToolsVersion= /m /nologo
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Test encoder

@@ -1,8 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Project>
-  <!-- Official SDK .vcxproj files still request toolset v142. Force the host default
-       (v143 on VS 2022, v145 on VS 2026) so CI and local builds work. -->
+  <!-- Official SDK .vcxproj files pin toolset v142 and VCToolsVersion 14.29.
+       Force the host default (v143 / v145) and drop the pinned MSVC version so
+       VS 2022/2026 CI can build pfc and foobar2000_SDK. -->
   <PropertyGroup>
     <PlatformToolset>$(DefaultPlatformToolset)</PlatformToolset>
+    <VCToolsVersion></VCToolsVersion>
   </PropertyGroup>
 </Project>
