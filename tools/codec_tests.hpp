@@ -53,7 +53,9 @@ int bark_history_flags(const twinvq::Encoder& enc) {
 int test_codec(bool lsp_search = twinvq::Encoder::Config{}.lsp_search,
                bool bark_search = twinvq::Encoder::Config{}.bark_search,
                bool psychoacoustic = false,
-               twinvq::Encoder::BlockMode blocks = twinvq::Encoder::BlockMode::Long) {
+               twinvq::Encoder::BlockMode blocks = twinvq::Encoder::BlockMode::Long,
+               bool ppc_search = false) {
+    int ppc_frames = 0;
     int history_flags = 0;
     int mode_count = 0;
     const auto* modes = twinvq::legal_modes(mode_count);
@@ -66,6 +68,7 @@ int test_codec(bool lsp_search = twinvq::Encoder::Config{}.lsp_search,
         cfg.bark_search = bark_search;
         cfg.psychoacoustic = psychoacoustic;
         cfg.block_mode = blocks;
+        cfg.ppc_search = ppc_search;
         twinvq::Encoder whole(cfg), chunked(cfg);
         const int hop = whole.frame_samples(), frames = 7 * hop + 17;
         std::vector<float> pcm(frames * channels);
@@ -78,6 +81,18 @@ int test_codec(bool lsp_search = twinvq::Encoder::Config{}.lsp_search,
         whole.feed(pcm.data(), frames);
         whole.flush();
         history_flags += bark_history_flags(whole);
+        // Long-frame trailer contains each channel's PPC period and gain.
+        if (blocks == twinvq::Encoder::BlockMode::Long) {
+            const int trailer = channels * (whole.mode()->ppc_period_bit + whole.mode()->pgain_bit);
+            for (int f = 0; f < whole.frames_written(); ++f) {
+                bool nonzero = false;
+                for (int j = 0; j < trailer; ++j) {
+                    const size_t bit = static_cast<size_t>(f + 1) * whole.frame_bits() - trailer + j;
+                    nonzero |= ((whole.data().at(bit / 8) >> (7 - bit % 8)) & 1) != 0;
+                }
+                ppc_frames += nonzero;
+            }
+        }
         for (int f = 0; f < whole.frames_written(); ++f) {
             int window = 0;
             for (int k = 0; k < twinvq::kWindowTypeBits; ++k) {
@@ -133,11 +148,14 @@ int test_codec(bool lsp_search = twinvq::Encoder::Config{}.lsp_search,
     if (bark_search ? history_flags == 0 : history_flags != 0)
         throw std::runtime_error("Bark history flags do not exercise the requested mode");
     std::cout << "transmitted Bark history flags=" << history_flags << "\n";
+    if (ppc_search ? ppc_frames == 0 : ppc_frames != 0)
+        throw std::runtime_error("PPC trailer does not exercise the requested mode");
+    std::cout << "nonzero PPC frames=" << ppc_frames << "\n";
     std::cout << "codec regression tests passed\n";
     return 0;
 }
 
-int test_codec_adaptive(bool temporal_search = false) {
+int test_codec_adaptive(bool temporal_search = false, bool ppc_search = false) {
     using Encoder = twinvq::Encoder;
     for (int position : {1, 2, 3}) {
         const int bitrate = position == 1 ? 80 : 96;
@@ -145,6 +163,7 @@ int test_codec_adaptive(bool temporal_search = false) {
         cfg.bitrate_kbps = bitrate;
         cfg.block_mode = Encoder::BlockMode::Adaptive;
         cfg.temporal_search = temporal_search;
+        cfg.ppc_search = ppc_search;
         Encoder whole(cfg), chunked(cfg);
         const int n = whole.frame_samples(), frames = 10 * n + 17;
         if (whole.lookahead_samples() != n) throw std::runtime_error("incorrect adaptive lookahead");

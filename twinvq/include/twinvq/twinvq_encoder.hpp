@@ -35,6 +35,8 @@ public:
         BlockMode block_mode = BlockMode::Long;
         // Experimental time-domain ranking of existing frame candidates.
         bool temporal_search = false;
+        // Experimental period, shape and gain search in Long frames.
+        bool ppc_search = false;
     };
 
     explicit Encoder(const Config& cfg);
@@ -75,7 +77,9 @@ private:
     void quantize_lsp(int ch, const float* target_lsp, float* rec_out, LspSearch search);
     void quantize_gain_bark(int ch, const float* spec, int block_size,
                             const float* lpc_env, bool search, const float* perceptual, int subblock = 0);
-    void quantize_ppc(int ch, float* spec);
+    void quantize_ppc(const float* spec, const float* lpc_env, const float* perceptual);
+    std::vector<int> ppc_positions(int period_coef) const;
+    void quantize_vectors(const float* residual, const float* weights, FrameType type);
     void quantize_main(const float* residual, const float* weights);
     void write_frame_bits();
 
@@ -120,6 +124,7 @@ private:
     float attack_previous_[2]{};
     std::vector<float> temporal_error_state_;
     int temporal_error_position_ = 0;
+    std::vector<std::vector<int>> ppc_position_cache_;
     int lead_left_ = 0;
     bool flushed_ = false;
 

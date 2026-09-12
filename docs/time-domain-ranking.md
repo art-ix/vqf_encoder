@@ -71,3 +71,10 @@ monotonic improvement of the final decoded signal. Reconsider the objective
 and candidate diversity before expanding this pool again. A separate next
 priority is full PPC search, currently unused for harmonic structure, rather
 than further breadth changes to these closely related gain/VQ candidates.
+
+## PPC integration
+
+Optional bounded PPC search is now available as `--ppc-search`. Its final
+LSP/Bark/PPC candidates participate in temporal ranking with the same spectral
+guard. See [PPC search](ppc-search.md); this does not reinstate the rejected
+intermediate gain/VQ candidate pool described above.
