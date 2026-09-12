@@ -2,6 +2,7 @@
 #include "twinvq/vqf_file.hpp"
 #include "bitstream.hpp"
 #include "twinvq_mdct.hpp"
+#include "twinvq_window.hpp"
 #include "twinvq_tables.hpp"
 
 #include <algorithm>
@@ -13,13 +14,6 @@ namespace twinvq {
 namespace {
 
 constexpr float kPi = 3.14159265358979323846f;
-
-const FrameType kWtypeToFtype[] = {
-    FrameType::Long, FrameType::Long, FrameType::Short, FrameType::Long,
-    FrameType::Medium, FrameType::Long, FrameType::Long, FrameType::Medium,
-    FrameType::Medium};
-
-const uint8_t kWtypeToWsize[] = {0, 0, 2, 2, 2, 1, 0, 1, 1};
 
 float mulawinv(float y, float clip, float mu) {
     y = std::clamp(y / clip, -1.0f, 1.0f);
@@ -423,7 +417,7 @@ bool Decoder::read_bitstream(BitReader& br) {
     window_type_ = br.get(kWindowTypeBits);
     if (window_type_ > 8)
         return false;
-    ftype_ = kWtypeToFtype[window_type_];
+    ftype_ = window_frame_type(window_type_);
     const int sub = mtab_->fmode[static_cast<int>(ftype_)].sub;
     read_cb_data(br, main_coeffs_, ftype_);
     for (int i = 0; i < channels_; i++)
@@ -494,39 +488,15 @@ void Decoder::read_and_decode_spectrum(float* out, FrameType ftype) {
 }
 
 void Decoder::imdct_and_window(FrameType ftype, int wtype, float* in, float* prev, int ch) {
-    const int fi = static_cast<int>(ftype);
-    const int bsize = mtab_->size / mtab_->fmode[fi].sub;
-    const int size = mtab_->size;
-    float* buf1 = tmp_buf_.data();
-    float* out = curr_frame_.data() + 2 * ch * mtab_->size;
-    float* out2 = out;
-    const int types_sizes[] = {
-        mtab_->size / mtab_->fmode[static_cast<int>(FrameType::Long)].sub,
-        mtab_->size / mtab_->fmode[static_cast<int>(FrameType::Medium)].sub,
-        mtab_->size / (mtab_->fmode[static_cast<int>(FrameType::Short)].sub * 2),
-    };
-    int wsize = types_sizes[kWtypeToWsize[wtype]];
-    const int first_wsize = wsize;
-    float* prev_buf = prev + (size - bsize) / 2;
-    const float norm = (channels_ == 1) ? 2.0f : 1.0f;
-    const float scale = -std::sqrt(norm / static_cast<float>(bsize)) / 32768.0f;
-
-    for (int j = 0; j < mtab_->fmode[fi].sub; j++) {
-        int sub_wtype = (ftype == FrameType::Medium) ? 8 : wtype;
-        if (!j && wtype == 4)
-            sub_wtype = 4;
-        else if (j == mtab_->fmode[fi].sub - 1 && wtype == 7)
-            sub_wtype = 7;
-        wsize = types_sizes[kWtypeToWsize[sub_wtype]];
-        imdct_half(buf1 + bsize * j, in + bsize * j, bsize, scale);
-        vector_fmul_window(out2, prev_buf + (bsize - wsize) / 2, buf1 + bsize * j, sine_window_cached(wsize),
-                           wsize / 2);
-        out2 += wsize;
-        std::memcpy(out2, buf1 + bsize * j + wsize / 2, (bsize - wsize / 2) * sizeof(float));
-        out2 += (ftype == FrameType::Medium) ? (bsize - wsize) / 2 : bsize - wsize;
-        prev_buf = buf1 + bsize * j + bsize / 2;
-    }
-    last_block_pos_[ch] = (size + first_wsize) / 2;
+    const auto layout = window_layout(*mtab_, ftype, wtype);
+    const float norm = channels_ == 1 ? 2.0f : 1.0f;
+    const float scale = -std::sqrt(norm / static_cast<float>(layout.block_size)) / 32768.0f;
+    for (int j = 0; j < layout.blocks; ++j)
+        imdct_half(tmp_buf_.data() + layout.block_size * j,
+                   in + layout.block_size * j, layout.block_size, scale);
+    synthesize_window(layout, tmp_buf_.data(), prev,
+                      curr_frame_.data() + 2 * ch * mtab_->size);
+    last_block_pos_[ch] = layout.output_size;
 }
 
 void Decoder::imdct_output(FrameType ftype, int wtype, float* interleaved) {

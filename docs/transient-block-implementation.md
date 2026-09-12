@@ -1,6 +1,6 @@
 # Transient block switching: implementation prerequisites
 
-Status: implementation prerequisites. No short/medium block encoder
+Status: offline window analysis/synthesis validation implemented. No short/medium block encoder
 is enabled by this change. Do not advertise pre-echo improvement from VQ SNR.
 
 ## Current blockers in this repository
@@ -36,3 +36,44 @@ is enabled by this change. Do not advertise pre-echo improvement from VQ SNR.
    decoder and FFmpeg. Use impulse/pre-attack energy tests as well as music
    listening; aggregate SNR alone is insufficient for temporal artifacts.
 
+
+## Stage 1: window geometry and offline analysis oracle
+
+`twinvq/src/twinvq_window.hpp` now owns the window-type mapping and the overlap/copy
+layout used by the decoder. Extracting it preserves the previous synthesis
+operation order within each window. The decoder computes each subblock IMDCT
+before applying the layout.
+
+`--test-mdct` also runs `window_transition_self_test`. Its offline analysis
+transposes the decoder's overlap rotations and copies, working backwards over
+a complete schedule. A forward MDCT of the middle-half buffer then inverts the
+half IMDCT. This is a reference for deriving streaming analysis; it is not yet
+an encoder feature or a transient detector. For ordinary long windows, its
+coefficients are also compared with the existing full sine-window MDCT.
+
+The suite covers all nine window IDs and every supported mode, with mono and
+stereo transform normalization. Tested schedules include:
+
+- `0, 0, 2, 2, 3, 0, 0`: long -> short -> long;
+- `0, 0, 8, 8, 5, 0, 0`: long -> medium -> long;
+- `0, 1, 2, 4, 7, 5, 6, 0`: short -> medium and alternate window IDs;
+- `0, 0, 8, 2, 3, 0, 0`: medium -> short;
+- `0, 0, 2, 3, 0, 0`: a single short frame.
+
+Noise, tones, DC, boundary impulses and zero-padded ends pass the transform
+roundtrip. An additional window-only impulse sweep covers every offset in
+active frames for each distinct mode geometry. Changing the synthesis exit
+window without changing analysis must fail the identity check. These tests
+validate the listed schedules, not a complete transition-state machine or the
+encoder's feed/flush behavior with future lookahead.
+
+Validation on Linux: maximum transform/overlap error `6.56e-7` (limit `5e-6`),
+18 codec mode/channel regressions passed. Synthetic bitstreams exercising all
+nine window IDs decode to byte-identical PCM before and after extraction in
+all 18 mode/channel combinations. No music material or music-derived results
+are included here.
+
+Next: derive bounded-lookahead analysis from this oracle, then implement
+per-subblock Bark envelopes, gains and frame-type-dependent VQ/scoring before
+enabling an experimental block-switching path. The production encoder still
+emits long frames only; this stage does not establish a pre-echo improvement.

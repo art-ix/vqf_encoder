@@ -2,6 +2,7 @@
 #include "twinvq/twinvq_decoder.hpp"
 #include "twinvq/vqf_file.hpp"
 #include "twinvq_mdct.hpp"
+#include "twinvq_window.hpp"
 
 #include <cmath>
 #include <cstdint>
@@ -263,7 +264,7 @@ int main(int argc, char** argv) try {
         return 0;
     }
     if (argc >= 2 && std::string(argv[1]) == "--test-mdct") {
-        float e1 = 0, e2 = 0, e3 = 0, e4 = 0;
+        float e1 = 0, e2 = 0, e3 = 0, e4 = 0, e5 = 0;
         const bool a = twinvq::imdct_self_test(&e1);
         const bool b = twinvq::mdct_roundtrip_test(&e2);
         const bool c = twinvq::mdct_self_test(&e3);
@@ -272,7 +273,9 @@ int main(int argc, char** argv) try {
         std::cout << "mdct roundtrip  " << (b ? "ok" : "FAIL") << " max abs err=" << e2 << "\n";
         std::cout << "mdct self-test  " << (c ? "ok" : "FAIL") << " max abs err=" << e3 << "\n";
         std::cout << "lpc self-test   " << (d ? "ok" : "FAIL") << " max abs err=" << e4 << "\n";
-        return (a && b && c && d) ? 0 : 1;
+        const bool e = twinvq::window_transition_self_test(&e5);
+        std::cout << "window transitions " << (e ? "ok" : "FAIL") << " max abs err=" << e5 << "\n";
+        return (a && b && c && d && e) ? 0 : 1;
     }
     if (argc >= 2 && std::string(argv[1]) == "--test-roundtrip") {
         const double sec = (argc >= 3) ? std::atof(argv[2]) : 0.6;

@@ -8,7 +8,8 @@ CPPFLAGS ?= -Itwinvq/include -Itwinvq/src
 DEPFLAGS = -MMD -MP
 
 LIB_SRCS = twinvq/src/vqf_file.cpp twinvq/src/twinvq_mdct.cpp \
-           twinvq/src/twinvq_decoder.cpp twinvq/src/twinvq_encoder.cpp
+           twinvq/src/twinvq_decoder.cpp twinvq/src/twinvq_encoder.cpp \
+           twinvq/src/twinvq_window_test.cpp
 LIB_OBJS = $(patsubst twinvq/src/%.cpp,obj/%.o,$(LIB_SRCS)) obj/twinvq_tables.o
 DECODE_OBJS = obj/vqf_file.o obj/twinvq_mdct.o obj/twinvq_decoder.o obj/twinvq_tables.o
 ALL_OBJS = $(LIB_OBJS) obj/vqf_encode.o obj/vqf_decode.o
