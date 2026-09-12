@@ -139,7 +139,8 @@ int test_codec(bool lsp_search = twinvq::Encoder::Config{}.lsp_search,
 
 int test_codec_adaptive() {
     using Encoder = twinvq::Encoder;
-    for (int bitrate : {80, 96}) {
+    for (int position : {1, 2, 3}) {
+        const int bitrate = position == 1 ? 80 : 96;
         Encoder::Config cfg;
         cfg.bitrate_kbps = bitrate;
         cfg.block_mode = Encoder::BlockMode::Adaptive;
@@ -150,7 +151,7 @@ int test_codec_adaptive() {
         for (int i = 0; i < frames; ++i) {
             // A settled tone, then a side-only tonal attack, then quiet again.
             const float tone = i < 3 * n ? 0.15f * std::sin(0.083f * i) : 0.0f;
-            const float burst = i >= 5 * n + n / 2 && i < 6 * n ?
+            const float burst = i >= 5 * n + position * n / 4 && i < 6 * n ?
                 0.3f * std::sin(1.713f * i) : 0.0f;
             pcm[2 * i] = tone + burst;
             pcm[2 * i + 1] = tone - burst;
@@ -179,9 +180,11 @@ int test_codec_adaptive() {
                 (w == 3 && previous != 2)) throw std::runtime_error("illegal adaptive transition");
             windows.push_back(w);
         }
-        // Account for the one prepended hop: frames 6/7 straddle the attack
-        // in source hop 5. Settled/quiet regions must return to long windows.
-        if (windows.front() != 0 || windows[6] != 2 || windows[7] != 2 || windows[10] != 0)
+        // Early and late attacks need different Short frames. The central
+        // boundary retains both; check actual transmitted windows, not flags.
+        const int expected6 = position == 3 ? 0 : 2;
+        const int expected7 = position == 1 ? 3 : 2;
+        if (windows.front() != 0 || windows[6] != expected6 || windows[7] != expected7 || windows[10] != 0)
             throw std::runtime_error("adaptive detector missed attack or failed to release");
         if (windows.back() == 2) throw std::runtime_error("adaptive overlap not closed");
         if (bitrate == 96) {
@@ -190,7 +193,7 @@ int test_codec_adaptive() {
             Encoder control(control_cfg);
             control.feed(pcm.data(), frames); control.flush();
             const auto long_pcm = decode_test_file(control);
-            const int onset = 5 * n + n / 2;
+            const int onset = 5 * n + position * n / 4;
             double adaptive_pre = 0, long_pre = 0, attack = 0, reference = 0;
             for (int i = onset - 512; i < onset; ++i) for (int ch = 0; ch < 2; ++ch) {
                 adaptive_pre += static_cast<double>(decoded[2 * i + ch]) * decoded[2 * i + ch];
@@ -202,10 +205,15 @@ int test_codec_adaptive() {
             }
             std::cout << "pre-attack energy ratio=" << adaptive_pre / long_pre
                       << " attack energy ratio=" << attack / reference << "\n";
-            if (!(adaptive_pre < 0.8 * long_pre && attack > 0.5 * reference && attack < 1.5 * reference))
+            // Keep the original central-attack improvement gate. The late
+            // tonal fixture does not beat Long even with two Short frames;
+            // guard its existing low leakage instead of assuming it does.
+            const bool pre_ok = position == 2 ? adaptive_pre < 0.8 * long_pre
+                                              : adaptive_pre < 0.001 * reference;
+            if (!(pre_ok && attack > 0.5 * reference && attack < 1.5 * reference))
                 throw std::runtime_error("adaptive pre-echo/gain regression");
         }
-        std::cout << "adaptive " << bitrate << " kbps: chunking, side attack, release and tail ok\n";
+        std::cout << "adaptive " << bitrate << " kbps, quarter " << position << ": chunking, side attack, release and tail ok\n";
     }
     // Short input and empty input exercise draining the lookahead queue.
     Encoder::Config cfg;

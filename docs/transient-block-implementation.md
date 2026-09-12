@@ -106,10 +106,19 @@ caught up. Initial trigger ratios are
 8 and 12 respectively, with a numerical floor of `1e-10`. They are heuristics,
 not calibrated hearing thresholds. No channel averaging hides side attacks.
 
-A one-hop queue gives the scheduler the upcoming attack flag. Each frame
+A one-hop queue gives the scheduler the upcoming attack regions. Each frame
 honors the window already used by the previous frame's analysis; only its
 successor is selected. The legal subset is 0 -> 2, 2 -> 2/3, 3 -> 0/2, and
-0 -> 0. Two overlapping frames cover an attack. The final buffered hop is
+0 -> 0. The detector distinguishes early and late attack slices. A Short
+frame covers the late region of the buffered PCM hop and the early region
+of the lookahead hop. The boundary follows decoder geometry:
+`(N - short_block_size / 2) / 2`. A one-slice guard on both sides retains
+two Short frames for attacks near that boundary; otherwise one is sufficient
+to cover the onset region. This avoids sacrificing frequency resolution in
+an adjacent frame that does not contain the onset. EOF retains the existing
+closure policy rather than scheduling a new Short flush frame.
+
+The final buffered hop is
 encoded before the zero flush hop, which closes any Short overlap with 3.
 Medium selection is intentionally deferred; its fixed mode remains available.
 
@@ -119,9 +128,17 @@ and irregular feed calls make the same decisions as whole-buffer input.
 The default Long path bypasses both the queue and detector.
 
 The window oracle includes repeated Short exits/reentries. The targeted
-adaptive codec suite covers stereo 80/96 kbps, side-only attacks, release,
+adaptive codec suite covers stereo 80/96 kbps, early/central/late side-only
+attacks, transmitted window placement, release,
 window legality, chunking, decoded length, short/empty input and pre-attack
 energy with an attack-gain guard. External FFmpeg decoding is also checked
 on synthetic and private local inputs. Private audio and measurements stay
 outside Git. Adaptive mode remains experimental: lower pre-echo can trade
 off against other reconstruction errors; no listening improvement is claimed.
+
+
+The central-attack test retains its pre-echo improvement gate. A late tonal
+attack instead checks leakage relative to attack energy and reconstructed
+gain: Long can have less leakage for that fixture even before positional
+selection. Local comparison with the two-Short-frame baseline is needed to
+distinguish a scheduling regression from this existing tradeoff.

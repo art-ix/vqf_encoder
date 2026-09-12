@@ -260,7 +260,8 @@ See [implementation and validation](docs/transient-block-implementation.md).
 
 `--block-mode adaptive` enables experimental transient detection and Long/Short
 switching. The detector examines L/R energy and first differences; both
-frames around an attack use Short, followed by the exit window and Long.
+frames around a boundary attack use Short; attacks away from that boundary
+use one Short frame, followed by the exit window and Long.
 Medium blocks are currently available only in the fixed evaluation mode.
 
 Adaptive mode buffers one additional hop (2048 samples, about 46.44 ms at

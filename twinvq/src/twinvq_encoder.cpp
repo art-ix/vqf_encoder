@@ -1603,11 +1603,12 @@ void Encoder::encode_frame(const float* interleaved_n, bool force_flush, bool ne
 // also catch bright attacks on a sustained bass. Analyze original L/R
 // independently so an attack cannot disappear in the mid/side conversion.
 // The absolute floor is numerical gating, not a calibrated hearing threshold.
-bool Encoder::detect_attack(const float* pcm) {
+unsigned Encoder::detect_attack(const float* pcm) {
     const int n = mtab_->size;
     const int block = n / mtab_->fmode[static_cast<int>(FrameType::Short)].sub;
     const double release = std::exp(-static_cast<double>(block) / (sample_rate_ * 0.015));
-    bool attack = false;
+    unsigned attack = 0;
+    const int boundary = (n - block / 2) / 2;
     for (int start = 0; start < n; start += block) {
         for (int ch = 0; ch < channels_; ++ch) {
             double energy = 0, high = 0;
@@ -1620,8 +1621,14 @@ bool Encoder::detect_attack(const float* pcm) {
             }
             energy /= block;
             high /= block;
-            attack |= energy > 8.0 * std::max(attack_energy_[ch], 1.0e-10)
-                   || high > 12.0 * std::max(attack_high_energy_[ch], 1.0e-10);
+            if (energy > 8.0 * std::max(attack_energy_[ch], 1.0e-10)
+                || high > 12.0 * std::max(attack_high_energy_[ch], 1.0e-10)) {
+                // A Short frame covers the latter part of one PCM hop and
+                // the early part of the next. Keep both near the boundary:
+                // energy is localized only to this analysis slice.
+                if (start < boundary + block) attack |= 1;
+                if (start + block > boundary - block) attack |= 2;
+            }
             attack_energy_[ch] = std::max(release * attack_energy_[ch], energy);
             attack_high_energy_[ch] = std::max(release * attack_high_energy_[ch], high);
         }
@@ -1634,11 +1641,12 @@ void Encoder::submit_hop(const float* pcm, bool final) {
         encode_frame(pcm, final);
         return;
     }
-    const bool attack = final ? false : detect_attack(pcm);
+    const unsigned attack = final ? 0 : detect_attack(pcm);
     if (!adaptive_pending_.empty()) {
-        // Cover the two overlapping frames around an attack. At EOF the
-        // buffered frame already covers the last attack; close its overlap.
-        encode_frame(adaptive_pending_.data(), false, !final && (adaptive_attack_ || attack));
+        // The next frame covers late attacks in the buffered hop and early
+        // attacks in the lookahead hop. Close its overlap at EOF as before.
+        const bool next_short = (adaptive_attack_ & 2) || (attack & 1);
+        encode_frame(adaptive_pending_.data(), false, !final && next_short);
         adaptive_pending_.clear();
     }
     if (final) {

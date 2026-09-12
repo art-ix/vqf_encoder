@@ -65,7 +65,7 @@ private:
     void init_bitstream_params();
     void construct_perm_table(FrameType ftype);
     void submit_hop(const float* interleaved_n, bool final);
-    bool detect_attack(const float* interleaved_n);
+    unsigned detect_attack(const float* interleaved_n);
     void encode_frame(const float* interleaved_n, bool force_flush, bool next_short = false);
     void mdct_channel(int ch, const float* time_2n, float* spec_n);
     void fit_subblock_gains(int ch, const double* target, const double* weight);
@@ -112,7 +112,7 @@ private:
     std::vector<float> pcm_pending_;  // interleaved leftover input
     std::vector<float> analysis_window_;
     std::vector<float> adaptive_pending_; // one interleaved hop of lookahead
-    bool adaptive_attack_ = false;
+    unsigned adaptive_attack_ = 0; // early/late attack regions
     double attack_energy_[2]{};
     double attack_high_energy_[2]{};
     float attack_previous_[2]{};
