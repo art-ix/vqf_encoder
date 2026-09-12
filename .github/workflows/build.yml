@@ -1,0 +1,22 @@
+name: build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  encoder:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: microsoft/setup-msbuild@v2
+      - name: Build TwinVQ library and CLI
+        run: |
+          msbuild tools\vqf_encode.vcxproj /p:Configuration=Release /p:Platform=x64 /m /nologo
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          msbuild tools\vqf_decode.vcxproj /p:Configuration=Release /p:Platform=x64 /m /nologo
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Test encoder
+        run: |
+          .\bin\x64\Release\vqf_encode.exe --test-roundtrip 0.4
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

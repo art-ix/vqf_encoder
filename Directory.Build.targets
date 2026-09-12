@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project>
+  <!-- Intentionally empty. Official SDK .vcxproj files still request toolset v142;
+       pass /p:PlatformToolset=v143 (VS 2022) or v145 (VS 2026) on the MSBuild command line. -->
+</Project>

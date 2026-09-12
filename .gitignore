@@ -1,0 +1,44 @@
+# Visual Studio / MSBuild
+.vs/
+**/Debug/
+**/Release/
+**/x64/
+*.user
+*.suo
+*.sdf
+*.opensdf
+*.aps
+*.opendb
+*.db
+ipch/
+*.VC.db
+*.VC.opendb
+
+# Build outputs
+bin/
+obj/
+*.pdb
+*.ilk
+*.exp
+*.iobj
+*.ipdb
+*.obj
+*.lib
+*.dll
+*.exe
+*.wav
+
+# foobar2000 SDK (download separately — see README)
+/sdk/
+/SDK-*/
+
+# Table generator inputs (optional; generated C++ tables are committed)
+twinvq/tables/twinvq_data.h
+twinvq/tables/metasound_twinvq_data.h
+
+# Local notes
+PLAN.md
+*.log
+
+# Packed binaries (attach to GitHub Releases, do not commit)
+dist/
