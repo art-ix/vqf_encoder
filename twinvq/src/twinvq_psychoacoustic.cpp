@@ -83,9 +83,10 @@ void psychoacoustic_weights(const float* spectrum, int n, int channels,
     for (int i = 0; i < n; ++i) {
         // Use the stricter ear and identical M/S weights. This avoids assuming
         // interaural masking or dropping cross terms from unequal L/R weights.
-        // Square-root compression and bounds limit the initial model's impact.
+        // Fourth-root compression limits the tradeoff against ordinary squared
+        // error. The largest relative weight ratio is four, rather than sixteen.
         const double threshold = std::min(l[band_id[i]], r[band_id[i]]);
-        const float w = static_cast<float>(std::clamp(std::sqrt(reference / threshold), 0.25, 4.0));
+        const float w = static_cast<float>(std::clamp(std::sqrt(std::sqrt(reference / threshold)), 0.5, 2.0));
         weights[i] = w;
         if (channels == 2) weights[n + i] = w;
     }
@@ -102,7 +103,7 @@ bool psychoacoustic_self_test() {
     }
     psychoacoustic_weights(spectrum.data(), n, 2, 44100, weights.data());
     for (int i = 0; i < n; ++i)
-        if (!std::isfinite(weights[i]) || weights[i] < 0.25f || weights[i] > 4.0f ||
+        if (!std::isfinite(weights[i]) || weights[i] < 0.5f || weights[i] > 2.0f ||
             weights[i] != weights[n + i]) return false;
     // Overall gain and polarity must not change a relative masking model.
     for (float factor : {-1.0f, 1.0f / 65536.0f, 65536.0f}) {

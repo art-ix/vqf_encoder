@@ -67,11 +67,21 @@ for start in a.starts:
                 ep = np.sum(error[:n].reshape(-1,1024,2)**2,axis=(1,2))
                 active = sp > max(sp.max()*1e-6,1e-15)
                 seg = np.mean(np.clip(10*np.log10((sp[active]+1e-30)/(ep[active]+1e-30)),-10,35))
+                # Magnitude-only comparison independent of the encoder's masking
+                # objective. Fixed 1024-sample Hann windows and a reference-relative
+                # -80 dB floor; smaller is better, but this is not a listening score.
+                window = np.hanning(1024)[None,:,None]
+                ref_mag = np.abs(np.fft.rfft(ref[:n].reshape(-1,1024,2)*window,axis=1))
+                out_mag = np.abs(np.fft.rfft(out[:n].reshape(-1,1024,2)*window,axis=1))
+                floor = max(float(ref_mag.max())*1e-4,1e-15)
+                log_error = 20*np.log10(np.maximum(ref_mag,floor)/np.maximum(out_mag,floor))
+                log_spectral_rmse = float(np.sqrt(np.mean(log_error*log_error)))
                 row = {'start':start,'kbps':bitrate,'beam':beam,'masking':masking,'encode_seconds':elapsed,
                     'bytes':encoded.stat().st_size,'decoded_frames':len(pcm),
                     'snr_db':(10*np.log10(power/mse)).tolist(),
                     'combined_snr_db':float(10*np.log10(power.sum()/mse.sum())),
-                    'segmental_snr_db':float(seg),'gain_db':(10*np.log10(np.mean(out*out,axis=0)/power)).tolist(),
+                    'segmental_snr_db':float(seg),'log_spectral_rmse_db':log_spectral_rmse,
+                    'gain_db':(10*np.log10(np.mean(out*out,axis=0)/power)).tolist(),
                     'peak':float(np.abs(pcm).max()),'over_full_scale_percent':float(100*np.mean(np.abs(pcm)>1)),
                     'demux_warning':bool(decoded.stderr)}
                 results['rows'].append(row)

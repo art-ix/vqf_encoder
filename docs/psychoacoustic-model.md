@@ -28,9 +28,11 @@ delay is introduced.
 4. Use a numerical floor of mean input power times `1e-12`. This floor is
    **not** a threshold of human hearing. Exactly silent frames use unit weights.
 5. Let `T` be the resulting threshold and `R` its mean over bins. The error
-   weight is `clamp(sqrt(R/T), 0.25, 4)`. This compressed, bounded inverse
+   weight is `clamp((R/T)^0.25, 0.5, 2)`. This compressed, bounded inverse
    threshold deliberately limits how much the experimental model can change
-   the objective. It is not a calibrated noise-to-mask ratio.
+   the objective. The maximum weight ratio between bins is four. The previous
+   square-root weighting allowed a ratio of sixteen, with a more aggressive
+   tradeoff against ordinary squared error. It is not a calibrated noise-to-mask ratio.
 
 For stereo, reconstruct L/R spectra from M/S for analysis. Use the smaller
 L/R threshold for both M and S. This conservative common weighting avoids
@@ -70,7 +72,10 @@ For private 44.1 kHz stereo material, `tools/benchmark_music.py` accepts
 `--masking off on --beams 16 --bitrates 80 96` along with the source,
 `--encoder`, `--starts`, and an `--output-dir` outside the repository. Audio
 and derived results must remain outside version control. The script reports
-ordinary SNR/segmental SNR, not a perceptual listening score.
+ordinary SNR/segmental SNR and log-spectral RMSE. The latter uses 1024-sample
+Hann windows, both channels, and a magnitude floor 80 dB below the maximum
+reference magnitude (at least `1e-15`). These are diagnostic metrics, not a
+perceptual listening score.
 
 Next steps are temporal stability/tonality analysis, calibration of the
 relative masking curves, and integration with the forthcoming short-block
