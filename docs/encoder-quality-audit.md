@@ -388,3 +388,28 @@ python3 tools/benchmark_gain.py /path/to/baseline/vqf_encode bin/vqf_encode obj/
 
 Pending work includes temporal/perceptual evaluation, transient block switching
 and PPC pitch search. The current changes do not implement those features.
+
+
+## Configuration update: all implemented quality searches enabled by default
+
+At the user's request, `Encoder::Config` now defaults both `lsp_search` and
+`bark_search` to true. This applies to the CLI and the foobar2000 component,
+which constructs the shared configuration without overriding these fields.
+Existing gain/VQ refinement and CLI band-limited resampling remain active.
+Earlier sections describe the defaults at the time of each experiment; their
+opt-in statements are superseded by this configuration change.
+
+CLI disable flags `--no-lsp-search` and `--no-bark-search` allow comparisons;
+positive flags remain supported. The last flag for each feature wins.
+`--test-codec` now tests the actual configuration defaults. Explicit basic,
+LSP-only and Bark-only tests retain coverage of all four combinations.
+
+Linux validation: the 18-mode default codec regression passed, with 22 Bark
+history flags exercised. The 0.5-second roundtrip passed at zero lag and
+22.5945 dB SNR. CLI default and three explicit disable combinations matched
+previously built explicit configurations byte-for-byte on the tone fixture.
+WAV-format regression tests passed. The Windows component inherits the setting
+by code inspection; it was not built locally on Linux.
+
+This enables the implemented searches, not future PPC/block-switching work.
+Known LSP regressions and additional encoding cost documented above still apply.

@@ -46,7 +46,8 @@ int bark_history_flags(const twinvq::Encoder& enc) {
     return total;
 }
 
-int test_codec(bool lsp_search = false, bool bark_search = false) {
+int test_codec(bool lsp_search = twinvq::Encoder::Config{}.lsp_search,
+               bool bark_search = twinvq::Encoder::Config{}.bark_search) {
     int history_flags = 0;
     int mode_count = 0;
     const auto* modes = twinvq::legal_modes(mode_count);

@@ -22,9 +22,9 @@ public:
         // Prepend one hop; MDCT overlap supplies the other decoder priming hop.
         bool compensate_delay = true;
         // Experimental frame-scored LSP beam search; increases encode time.
-        bool lsp_search = false;
+        bool lsp_search = true;
         // Experimental reconstruction-weighted Bark/history candidate.
-        bool bark_search = false;
+        bool bark_search = true;
     };
 
     explicit Encoder(const Config& cfg);

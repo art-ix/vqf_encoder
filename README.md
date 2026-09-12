@@ -194,28 +194,28 @@ Codebook tables are numerical TwinVQ constants required to encode the format.
 Known NTT TwinVQ patent families expired around 2015–2020. That is not legal advice.
 
 
-### Experimental LSP search
+### Quality search defaults
 
-`vqf_encode --lsp-search -b 96 input.wav output.vqf` enables prediction-aware
-LSP beam search, comparing the ordinary and searched candidates after full
-frame quantization. It is disabled by default because some test signals regress
-and encoding takes approximately twice as long. In the C++ API set
-`Encoder::Config::lsp_search = true`. The foobar2000 component keeps the default.
-Run `vqf_encode --test-codec-lsp` to check all 18 modes with this option.
-See [the audit](docs/encoder-quality-audit.md) for measured gains and regressions.
+LSP and Bark/history search are enabled by default in the CLI, the C++ API and
+the foobar2000 component. Existing gain/VQ refinement and CLI band-limited
+resampling remain active. No extra flags are needed:
 
+```sh
+vqf_encode -b 96 input.wav output.vqf
+```
 
-### Experimental Bark/history search
+The encoder evaluates all four ordinary/searched LSP/Bark combinations per
+frame and commits the winning parameters and histories together. This increases
+encoding work; some signals still have known LSP regressions. The defaults are
+chosen for broader search, not a guarantee of universally better listening
+quality. See [the audit](docs/encoder-quality-audit.md) for measurements.
 
-`vqf_encode --bark-search -b 96 input.wav output.vqf` evaluates an additional
-Bark candidate using LPC synthesis weights and both history settings. It is
-opt-in because music listening validation is still pending and encoding costs
-roughly twice as much. In the C++ API set `Encoder::Config::bark_search = true`.
-Combine with `--lsp-search` to evaluate all four ordinary/searched LSP/Bark
-combinations per frame, at a correspondingly higher cost. The selected frame's
-parameters and histories are committed together.
+To disable either search use `--no-lsp-search` or `--no-bark-search`; in the C++
+API set the corresponding `Encoder::Config` field to false. The positive flags
+`--lsp-search` and `--bark-search` remain supported. If flags conflict, the last
+one for each search takes effect.
 
-`--test-codec-bark` tests Bark search in all 18 modes; `--test-codec-search`
-tests both options together. These tests also check that Bark history flags
-are actually transmitted. Default encoding and the foobar2000 component remain
-unchanged. Measurements and limitations are in [the audit](docs/encoder-quality-audit.md).
+`--test-codec` tests the configured defaults in all 18 modes. The commands
+`--test-codec-basic`, `--test-codec-lsp` and `--test-codec-bark` explicitly test
+neither search, LSP only, and Bark only. `--test-codec-search` explicitly tests
+both. The tests include history flag transmission and feed/flush consistency.
