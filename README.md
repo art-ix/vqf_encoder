@@ -12,8 +12,11 @@ SoundVQ SDK. Bitstream, codebooks and VQF chunks match
 
 ## Prebuilt binaries
 
-Build `vqf_encode.exe` and `foo_enc_vqf.dll` with Visual Studio (see below).
-A Windows x64 zip belongs on the GitHub Release.
+Download the Windows x64 zip from [Releases](https://github.com/art-ix/vqf_encoder/releases/latest):
+
+* `foo_enc_vqf.dll` — native foobar2000 2.x encoder component
+* `vqf_encode.exe` — Converter / CLI encoder
+* `vqf_decode.exe` — CLI decoder for roundtrip tests
 
 ## Features
 

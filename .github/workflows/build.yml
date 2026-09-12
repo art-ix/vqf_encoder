@@ -3,6 +3,13 @@ name: build
 on:
   push:
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  FOOBAR2000_SDK_URL: https://www.foobar2000.org/downloads/SDK-2025-03-07.7z
 
 jobs:
   encoder:
@@ -10,13 +17,95 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: microsoft/setup-msbuild@v2
-      - name: Build TwinVQ library and CLI
+
+      - name: Download foobar2000 SDK
+        shell: pwsh
         run: |
-          msbuild tools\vqf_encode.vcxproj /p:Configuration=Release /p:Platform=x64 /m /nologo
+          $ErrorActionPreference = 'Stop'
+          Invoke-WebRequest -Uri $env:FOOBAR2000_SDK_URL -OutFile sdk.7z -UseBasicParsing -UserAgent 'Mozilla/5.0'
+          if (-not (Get-Command 7z -ErrorAction SilentlyContinue)) {
+            choco install 7zip.install -y --no-progress
+            $env:PATH = 'C:\Program Files\7-Zip;' + $env:PATH
+          }
+          New-Item -ItemType Directory -Force _sdk | Out-Null
+          & 7z x sdk.7z "-o_sdk" -y | Out-Host
+          if (Test-Path '_sdk\foobar2000\SDK') {
+            Move-Item _sdk sdk
+          } else {
+            $inner = Get-ChildItem _sdk -Directory | Select-Object -First 1
+            if (-not $inner) { throw 'SDK archive had no directory' }
+            Move-Item $inner.FullName sdk
+          }
+          if (-not (Test-Path 'sdk\foobar2000\SDK\foobar2000_SDK.vcxproj')) {
+            throw 'SDK layout unexpected — missing foobar2000_SDK.vcxproj'
+          }
+
+      - name: Build TwinVQ library, CLI and component
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          msbuild vqf_encoder.sln /p:Configuration=Release /p:Platform=x64 /m /nologo
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          msbuild tools\vqf_decode.vcxproj /p:Configuration=Release /p:Platform=x64 /m /nologo
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Test encoder
+        shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
+          .\bin\x64\Release\vqf_encode.exe --test-mdct
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           .\bin\x64\Release\vqf_encode.exe --test-roundtrip 0.4
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Package Windows x64 zip
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ver = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME.TrimStart('v') } else { 'dev' }
+          $out = "foo_enc_vqf-$ver-win-x64"
+          New-Item -ItemType Directory -Force $out | Out-Null
+          Copy-Item bin\x64\Release\vqf_encode.exe $out\
+          Copy-Item bin\x64\Release\vqf_decode.exe $out\
+          Copy-Item bin\x64\Release\foo_enc_vqf.dll $out\
+          Copy-Item README.md,LICENSE $out\
+          $install = @(
+            "TwinVQ / VQF encoder $ver (Windows x64)",
+            "",
+            "foo_enc_vqf.dll  - copy into foobar2000\components\ and restart",
+            "vqf_encode.exe   - Converter CLI (encoder vqf_encode.exe, extension vqf, parameters -b 96 %s %d)",
+            "vqf_decode.exe   - roundtrip tests",
+            "",
+            "Keep foo_input_vqf.dll installed to play the files you encode:",
+            "https://github.com/art-ix/vqf_decoder"
+          ) -join "`n"
+          Set-Content -Encoding utf8 -Path "$out\INSTALL.txt" -Value $install
+          Compress-Archive -Path $out\* -DestinationPath "$out.zip" -Force
+          echo "ASSET=$out.zip" >> $env:GITHUB_ENV
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: foo_enc_vqf-win-x64
+          path: foo_enc_vqf-*-win-x64.zip
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: foo_enc_vqf-*-win-x64.zip
+          fail_on_unmatched_files: true
+          body: |
+            Initial TwinVQ / VQF encoder for foobar2000.
+
+            Independent encoder — no FFmpeg, `tvqenc.dll`, or Yamaha SoundVQ SDK. Bitstream and codebooks match [`vqf_decoder`](https://github.com/art-ix/vqf_decoder).
+
+            Windows x64 zip:
+
+            | File | Purpose |
+            | --- | --- |
+            | `foo_enc_vqf.dll` | Native foobar2000 2.x encoder component |
+            | `vqf_encode.exe` | Converter / CLI encoder |
+            | `vqf_decode.exe` | CLI decoder for roundtrip tests |
+
+            **Component:** copy `foo_enc_vqf.dll` into the foobar2000 `components` folder and restart. Bitrate is under Preferences → Advanced → TwinVQ encoder.
+
+            **Converter:** copy `vqf_encode.exe` next to foobar2000. Encoder `vqf_encode.exe`, extension `vqf`, parameters `-b 96 %s %d` (WAV temp file).
