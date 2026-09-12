@@ -44,7 +44,13 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          msbuild vqf_encoder.sln /p:Configuration=Release /p:Platform=x64 /p:VCToolsVersion= /m /nologo
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $install = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $install) { throw 'Visual Studio C++ toolset not found' }
+          $msvc = Get-ChildItem (Join-Path $install 'VC\Tools\MSVC') | Sort-Object { [version]$_.Name } -Descending | Select-Object -First 1
+          if (-not $msvc) { throw 'No VC\Tools\MSVC version installed' }
+          Write-Host "Using VCToolsVersion $($msvc.Name)"
+          msbuild vqf_encoder.sln /p:Configuration=Release /p:Platform=x64 /p:VCToolsVersion=$($msvc.Name) /m /nologo
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Test encoder
