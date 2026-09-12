@@ -25,6 +25,9 @@ public:
         bool lsp_search = true;
         // Experimental reconstruction-weighted Bark/history candidate.
         bool bark_search = true;
+        // Main-VQ candidates: 0 = auto (16 for 44.1 kHz stereo, 4 otherwise).
+        // Explicit choices: 4, 8, 16 or 32.
+        int vq_beam = 0;
     };
 
     explicit Encoder(const Config& cfg);

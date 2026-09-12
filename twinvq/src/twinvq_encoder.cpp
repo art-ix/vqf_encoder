@@ -307,6 +307,8 @@ bool pick_encoder_mode(int sample_rate, int channels, int bitrate_kbps,
 }
 
 Encoder::Encoder(const Config& cfg) : cfg_(cfg) {
+    if (cfg.vq_beam != 0 && cfg.vq_beam != 4 && cfg.vq_beam != 8 && cfg.vq_beam != 16 && cfg.vq_beam != 32)
+        throw std::invalid_argument("VQ beam must be auto (0), 4, 8, 16 or 32");
     std::string err;
     int rate = cfg.sample_rate;
     int br = cfg.bitrate_kbps;
@@ -316,6 +318,8 @@ Encoder::Encoder(const Config& cfg) : cfg_(cfg) {
     sample_rate_ = out_rate;
     channels_ = std::clamp(cfg.channels, 1, 2);
     bitrate_kbps_ = out_br;
+    if (cfg_.vq_beam == 0)
+        cfg_.vq_beam = sample_rate_ == 44100 && channels_ == 2 ? 16 : 4;
     mtab_ = select_mode(sample_rate_, bitrate_kbps_, channels_);
     if (!mtab_)
         throw std::runtime_error("unsupported TwinVQ mode");
@@ -975,9 +979,9 @@ void Encoder::quantize_main(const float* residual, const float* weights) {
         // Keep several first-stage choices: the closest cb0 alone need not
         // belong to the best cb0+cb1 pair. Score in reconstructed MDCT units
         // so LPC peaks do not amplify otherwise small quantization errors.
-        constexpr int beam_size = 4;
-        float beam_error[beam_size];
-        int beam_index[beam_size]{}, beam_sign[beam_size]{};
+        const int beam_size = cfg_.vq_beam;
+        float beam_error[32];
+        int beam_index[32]{}, beam_sign[32]{};
         std::fill_n(beam_error, beam_size, 1.0e30f);
         for (int a = 0; a < n0; a++) {
             const int16_t* t0 = cb0 + a * cb_len;
@@ -1021,31 +1025,35 @@ void Encoder::quantize_main(const float* residual, const float* weights) {
                     }
                 }
             }
-        }
-        // Coordinate refinement can only lower the error of the selected pair.
-        for (int pass = 0; pass < 2; ++pass) {
-            for (int stage = 0; stage < 2; ++stage) {
-                const int16_t* fixed = stage ? cb0 + best0 * cb_len : cb1 + best1 * cb_len;
-                const int sign = stage ? s0 : s1;
-                for (int j = 0; j < length; ++j) rest[j] = target[j] - sign * fixed[j];
-                const int16_t* cb = stage ? cb1 : cb0;
-                for (int a = 0; a < (stage ? n1 : n0); ++a) {
-                    for (int s = 0; s < ((stage ? sign1_en : sign0_en) ? 2 : 1); ++s) {
-                        const int sg = s ? -1 : 1;
-                        float e = 0;
-                        for (int j = 0; j < length; ++j) {
-                            const float d = rest[j] - sg * cb[a * cb_len + j];
-                            e += weight[j] * d * d;
-                        }
-                        if (e < best_e) {
-                            best_e = e;
-                            if (stage) { best1 = a; s1 = sg; }
-                            else { best0 = a; s0 = sg; }
+            // Refine each prefix of four and retain its winner. A wider beam
+            // includes the old four-candidate solution and cannot increase
+            // this fixed-target vector error merely by choosing a new seed.
+            if ((slot + 1) % 4 != 0) continue;
+            for (int pass = 0; pass < 2; ++pass) {
+                for (int stage = 0; stage < 2; ++stage) {
+                    const int16_t* fixed = stage ? cb0 + best0 * cb_len : cb1 + best1 * cb_len;
+                    const int sign = stage ? s0 : s1;
+                    for (int j = 0; j < length; ++j) rest[j] = target[j] - sign * fixed[j];
+                    const int16_t* cb = stage ? cb1 : cb0;
+                    for (int a = 0; a < (stage ? n1 : n0); ++a) {
+                        for (int s = 0; s < ((stage ? sign1_en : sign0_en) ? 2 : 1); ++s) {
+                            const int sg = s ? -1 : 1;
+                            float e = 0;
+                            for (int j = 0; j < length; ++j) {
+                                const float d = rest[j] - sg * cb[a * cb_len + j];
+                                e += weight[j] * d * d;
+                            }
+                            if (e < best_e) {
+                                best_e = e;
+                                if (stage) { best1 = a; s1 = sg; }
+                                else { best0 = a; s0 = sg; }
+                            }
                         }
                     }
                 }
             }
-        }
+
+        } // beam candidates and prefix refinement
 
         uint8_t c0 = static_cast<uint8_t>(best0);
         uint8_t c1 = static_cast<uint8_t>(best1);

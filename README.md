@@ -222,3 +222,15 @@ one for each search takes effect.
 `--test-codec-basic`, `--test-codec-lsp` and `--test-codec-bark` explicitly test
 neither search, LSP only, and Bark only. `--test-codec-search` explicitly tests
 both. The tests include history flag transmission and feed/flush consistency.
+
+
+### VQ search breadth for 80/96 kbps
+
+The default `--vq-beam auto` uses 16 main-VQ candidates for 44.1 kHz stereo
+(80/96 kbps), and four for other modes. `--vq-beam 8` is a faster compromise;
+`--vq-beam 4` restores the previous breadth. Explicit 16 and 32 are supported.
+The native foobar2000 component inherits automatic selection.
+
+For behavior, API settings and local test commands, see [VQ search breadth](docs/vq-search.md).
+Larger search breadth increases encoding work. No private test audio or its
+measurement results are included in the repository.

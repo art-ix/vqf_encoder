@@ -121,6 +121,7 @@ void usage() {
               << "  --lsp-search        enable frame-scored LSP search (default)\n"
               << "  --no-bark-search    disable Bark/history search\n"
               << "  --no-lsp-search     disable LSP search\n"
+              << "  --vq-beam N        VQ breadth: auto (default), 4, 8, 16, 32\n"
               << "  --no-delay           do not prepend priming frames\n"
               << "\nfoobar2000 Converter:\n"
               << "  Encoder     vqf_encode.exe\n"
@@ -314,6 +315,14 @@ int main(int argc, char** argv) try {
             cfg.bark_search = false;
         } else if (a == "--no-lsp-search") {
             cfg.lsp_search = false;
+        } else if (a == "--vq-beam") {
+            const std::string value = need("--vq-beam");
+            if (value == "auto") cfg.vq_beam = 0;
+            else if (value == "4") cfg.vq_beam = 4;
+            else if (value == "8") cfg.vq_beam = 8;
+            else if (value == "16") cfg.vq_beam = 16;
+            else if (value == "32") cfg.vq_beam = 32;
+            else throw std::invalid_argument("VQ beam must be auto, 4, 8, 16 or 32");
         } else if (a == "--bark-search") {
             cfg.bark_search = true;
         } else if (a == "--lsp-search") {
