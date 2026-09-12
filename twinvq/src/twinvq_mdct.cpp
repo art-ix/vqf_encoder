@@ -1,6 +1,8 @@
 #include "twinvq_mdct.hpp"
 
 #include <cmath>
+#include <algorithm>
+#include <cstdint>
 #include <cstring>
 #include <mutex>
 #include <vector>
@@ -52,6 +54,8 @@ struct MdctPlan {
     std::vector<float> wr;
     std::vector<float> wi;
     std::vector<int> rev;
+    std::vector<float> forward_pre_c, forward_pre_s;
+    std::vector<float> forward_post_c, forward_post_s;
 };
 
 // Fast path: y[i] = Re{ j * e^{j π (i+1/2)/(2N)} * IFFT_{2N}(S)[i] }
@@ -64,6 +68,21 @@ MdctPlan make_plan(int ncoeffs) {
     p.bits = log2_pow2(p.fft_n);
     const int N = ncoeffs;
     const int M = p.fft_n;
+
+    p.forward_pre_c.resize(M);
+    p.forward_pre_s.resize(M);
+    for (int i = 0; i < M; ++i) {
+        const double a = kPiD * i / M;
+        p.forward_pre_c[i] = static_cast<float>(std::cos(a));
+        p.forward_pre_s[i] = static_cast<float>(std::sin(a));
+    }
+    p.forward_post_c.resize(N);
+    p.forward_post_s.resize(N);
+    for (int k = 0; k < N; ++k) {
+        const double a = kPiD / N * (0.5 + 0.5 * N) * (k + 0.5);
+        p.forward_post_c[k] = static_cast<float>(std::cos(a));
+        p.forward_post_s[k] = static_cast<float>(std::sin(a));
+    }
 
     p.pre_re.resize(static_cast<size_t>(N));
     p.pre_im.resize(static_cast<size_t>(N));
@@ -206,32 +225,25 @@ void mdct_forward_fft(float* output, const float* input_2n, int ncoeffs, float s
     thread_local std::vector<float> scratch;
     const size_t need = static_cast<size_t>(M) * 2;
     if (scratch.size() < need)
-        scratch.assign(need, 0.0f);
-    else
-        std::memset(scratch.data(), 0, need * sizeof(float));
+        scratch.resize(need);
 
     const int* rev = p.rev.data();
     for (int n = 0; n < M; n++) {
-        const double theta = kPiD * static_cast<double>(n) / static_cast<double>(M);
-        const float xr = input_2n[n] * static_cast<float>(std::cos(theta));
-        const float xi = input_2n[n] * static_cast<float>(std::sin(theta));
+        const float xr = input_2n[n] * p.forward_pre_c[n];
+        const float xi = input_2n[n] * p.forward_pre_s[n];
         const int j = rev[n] << 1;
         scratch[static_cast<size_t>(j)] = xr;
         scratch[static_cast<size_t>(j) + 1] = xi;
     }
 
-    for (size_t i = 1; i < need; i += 2)
-        scratch[i] = -scratch[i];
+    // Positive-exponent FFT plus the MDCT half-bin and N/2 time shifts.
     ifft_dit(scratch.data(), M, p.wr.data(), p.wi.data());
-    for (size_t i = 1; i < need; i += 2)
-        scratch[i] = -scratch[i];
 
     for (int k = 0; k < N; k++) {
         const float re = scratch[static_cast<size_t>(k) << 1];
         const float im = scratch[(static_cast<size_t>(k) << 1) + 1];
-        const double alpha = kPiD * (static_cast<double>(k) + 0.5) / static_cast<double>(M);
-        const float c = static_cast<float>(std::cos(alpha));
-        const float s = static_cast<float>(std::sin(alpha));
+        const float c = p.forward_post_c[k];
+        const float s = p.forward_post_s[k];
         output[k] = scale * (c * re - s * im);
     }
 }
@@ -246,12 +258,15 @@ void imdct_half(float* output, const float* input, int ncoeffs, float scale) {
 }
 
 void mdct_forward(float* output, const float* input_2n, int ncoeffs, float scale) {
-    mdct_forward_direct(output, input_2n, ncoeffs, scale);
+    if (ncoeffs >= 32 && ncoeffs <= 2048 && (ncoeffs & (ncoeffs - 1)) == 0)
+        mdct_forward_fft(output, input_2n, ncoeffs, scale);
+    else
+        mdct_forward_direct(output, input_2n, ncoeffs, scale);
 }
 
 bool mdct_roundtrip_test(float* max_abs_err) {
     float worst = 0.0f;
-    const int sizes[] = {32, 256, 512};
+    const int sizes[] = {32, 64, 128, 256, 512, 1024, 2048};
     for (int n : sizes) {
         const int hops = 6;
         std::vector<float> time(static_cast<size_t>(n) * (hops + 2), 0.0f);
@@ -297,7 +312,29 @@ bool mdct_roundtrip_test(float* max_abs_err) {
     }
     if (max_abs_err)
         *max_abs_err = worst;
-    return worst < 5.0e-2f;
+    return worst < 5.0e-6f;
+}
+
+bool mdct_self_test(float* max_abs_err) {
+    float worst = 0;
+    for (int n = 32; n <= 2048; n *= 2) {
+        std::vector<float> input(2 * n), reference(n), actual(n);
+        uint32_t rng = 1;
+        for (int trial = 0; trial < 3; ++trial) {
+            for (int i = 0; i < 2 * n; ++i) {
+                rng = rng * 1664525u + 1013904223u;
+                input[i] = trial == 0 ? (i == n / 3 ? 1.0f : 0.0f)
+                         : trial == 1 ? static_cast<float>(std::sin(0.17 * i))
+                         : static_cast<float>(rng >> 8) / 8388608.0f - 1.0f;
+            }
+            mdct_forward_direct(reference.data(), input.data(), n, 2.0f / n);
+            mdct_forward(actual.data(), input.data(), n, 2.0f / n);
+            for (int k = 0; k < n; ++k)
+                worst = std::max(worst, std::fabs(reference[k] - actual[k]));
+        }
+    }
+    if (max_abs_err) *max_abs_err = worst;
+    return worst < 5.0e-6f;
 }
 
 bool imdct_self_test(float* max_abs_err) {

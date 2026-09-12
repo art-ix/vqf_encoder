@@ -12,6 +12,7 @@ void mdct_forward(float* output, const float* input_2n, int ncoeffs, float scale
 
 // Compare FFT IMDCT against the direct cosine definition. Returns true on pass.
 bool imdct_self_test(float* max_abs_err);
+bool mdct_self_test(float* max_abs_err);
 
 // MDCT -> IMDCT-half + overlap-add identity test. Returns true on pass.
 bool mdct_roundtrip_test(float* max_abs_err);

@@ -103,10 +103,10 @@ float get_cos(int idx, int part, const float* cos_tab, int size) {
     return part ? -cos_tab[size - idx - 1] : cos_tab[idx];
 }
 
-float cheb_poly(const float* coef, int n, float x) {
-    float b0 = 0, b1 = 0;
+double cheb_poly(const double* coef, int n, double x) {
+    double b0 = 0, b1 = 0;
     for (int i = n; i >= 0; i--) {
-        const float b2 = b1;
+        const double b2 = b1;
         b1 = b0;
         b0 = 2.0f * x * b1 - b2 + coef[i];
     }
@@ -151,27 +151,35 @@ void levinson(const float* r, int order, float* a) {
 // Convert LPC (a[0]=1..a[order]) to LSPs in radians (0, pi).
 void lpc_to_lsp(const float* a, int order, float* lsp) {
     const int half = order / 2;
-    std::vector<float> p(static_cast<size_t>(half) + 1, 0.0f);
-    std::vector<float> q(static_cast<size_t>(half) + 1, 0.0f);
+    std::vector<double> p(static_cast<size_t>(half) + 1, 0.0);
+    std::vector<double> q(static_cast<size_t>(half) + 1, 0.0);
     p[0] = q[0] = 1.0f;
     for (int i = 1; i <= half; i++) {
         p[static_cast<size_t>(i)] = a[i] + a[order + 1 - i] - p[static_cast<size_t>(i - 1)];
         q[static_cast<size_t>(i)] = a[i] - a[order + 1 - i] + q[static_cast<size_t>(i - 1)];
     }
-    const int ngrid = 256;
+    // The symmetric LPC polynomials are ordered from cos(half*w) down
+    // to the constant term. Clenshaw expects the opposite order, and the
+    // unpaired constant coefficient has half the weight.
+    std::reverse(p.begin(), p.end());
+    std::reverse(q.begin(), q.end());
+    p[0] *= 0.5;
+    q[0] *= 0.5;
+    constexpr int ngrid = 1024;
     int found = 0;
-    float prev_x = 1.0f;
-    float prev_p = cheb_poly(p.data(), half, prev_x);
-    float prev_q = cheb_poly(q.data(), half, prev_x);
+    double prev_x = 1.0;
+    double prev = cheb_poly(p.data(), half, prev_x);
     for (int g = 1; g <= ngrid && found < order; g++) {
-        const float x = std::cos(kPi * static_cast<float>(g) / static_cast<float>(ngrid));
-        const float pv = cheb_poly(p.data(), half, x);
-        const float qv = cheb_poly(q.data(), half, x);
-        if (prev_p * pv <= 0.0f && found < order) {
-            float a0 = prev_x, b0 = x, fa = prev_p;
-            for (int it = 0; it < 8; it++) {
-                const float m = 0.5f * (a0 + b0);
-                const float fm = cheb_poly(p.data(), half, m);
+        const double x = std::cos(3.14159265358979323846 * g / ngrid);
+        const double* poly = (found & 1) ? q.data() : p.data();
+        double value = cheb_poly(poly, half, x);
+        // Stable LPC roots alternate between P and Q. Recheck the same
+        // interval after each root so close pairs cannot be skipped.
+        while (prev * value <= 0 && found < order) {
+            double a0 = prev_x, b0 = x, fa = prev;
+            for (int it = 0; it < 20; it++) {
+                const double m = 0.5 * (a0 + b0);
+                const double fm = cheb_poly(poly, half, m);
                 if (fa * fm <= 0) {
                     b0 = m;
                 } else {
@@ -179,29 +187,18 @@ void lpc_to_lsp(const float* a, int order, float* lsp) {
                     fa = fm;
                 }
             }
-            lsp[found++] = std::acos(std::clamp(0.5f * (a0 + b0), -1.0f, 1.0f));
-        }
-        if (prev_q * qv <= 0.0f && found < order) {
-            float a0 = prev_x, b0 = x, fa = prev_q;
-            for (int it = 0; it < 8; it++) {
-                const float m = 0.5f * (a0 + b0);
-                const float fm = cheb_poly(q.data(), half, m);
-                if (fa * fm <= 0) {
-                    b0 = m;
-                } else {
-                    a0 = m;
-                    fa = fm;
-                }
-            }
-            lsp[found++] = std::acos(std::clamp(0.5f * (a0 + b0), -1.0f, 1.0f));
+            prev_x = 0.5 * (a0 + b0);
+            lsp[found++] = static_cast<float>(std::acos(std::clamp(prev_x, -1.0, 1.0)));
+            poly = (found & 1) ? q.data() : p.data();
+            prev = cheb_poly(poly, half, prev_x);
+            value = cheb_poly(poly, half, x);
         }
         prev_x = x;
-        prev_p = pv;
-        prev_q = qv;
+        prev = value;
     }
-    sort_floats(lsp, found);
-    for (int i = found; i < order; i++)
-        lsp[i] = kPi * (static_cast<float>(i) + 1.0f) / static_cast<float>(order + 1);
+    if (found != order)
+        for (int i = 0; i < order; i++)
+            lsp[i] = kPi * (static_cast<float>(i) + 1.0f) / static_cast<float>(order + 1);
     rearrange_lsp(order, lsp, 0.001f);
     sort_floats(lsp, order);
 }
@@ -219,7 +216,8 @@ int quantize_mu(float linear, float clip, float mu, int bits) {
     const int maxv = (1 << bits) - 1;
     const float step = clip / static_cast<float>(maxv);
     const float y = mulaw(linear, clip, mu);
-    const int idx = static_cast<int>(std::lrint(y / step));
+    // Reconstruction uses (index + 0.5) * step, not index * step.
+    const int idx = static_cast<int>(std::floor(y / step));
     return std::clamp(idx, 0, maxv);
 }
 
@@ -227,13 +225,39 @@ int quantize_mu(float linear, float clip, float mu, int bits) {
 // long frames measure ~6e3). Gain maps flattened MDCT onto that scale.
 constexpr float kTargetResidRms = 6000.0f;
 
-// Decoder IMDCT applies /32768 so float PCM matches 16-bit TwinVQ. Putting
-// that factor into the analysis MDCT saturates the 8-bit mu-law gain (max
-// ~1.59 vs ~0.05 on real Yamaha files) and leaves a residual the VQ cannot
-// represent — audible noise. 16384 lands typical music in that domain.
-constexpr float kMdctPcmScale = 16384.0f;
+// Invert the decoder's conversion from the 16-bit TwinVQ amplitude domain.
+constexpr float kMdctPcmScale = 32768.0f;
 
 } // namespace
+
+bool lpc_analysis_self_test(float* max_abs_err) {
+    float worst = 0;
+    for (int order : {8, 12, 16, 20}) {
+        for (int trial = 0; trial < 2; ++trial) {
+            float expected[kLspCoefsMax], actual[kLspCoefsMax];
+            std::vector<double> p(order + 2), q(order + 2);
+            p[0] = q[0] = 1;
+            p[1] = 1; q[1] = -1;
+            for (int j = 0; j < order; ++j) {
+                expected[j] = kPi * (j + 1.0f) / (order + 1.0f);
+                if (trial) expected[j] += 0.025f * std::sin(1.7f * j);
+                auto& poly = (j & 1) ? q : p;
+                const double c = -2 * std::cos(static_cast<double>(expected[j]));
+                const auto old = poly;
+                for (int i = 0; i < order + 2; ++i)
+                    poly[i] = old[i] + (i > 0 ? c * old[i - 1] : 0)
+                                      + (i > 1 ? old[i - 2] : 0);
+            }
+            float a[kLspCoefsMax + 1];
+            for (int i = 0; i <= order; ++i) a[i] = static_cast<float>((p[i] + q[i]) * 0.5);
+            lpc_to_lsp(a, order, actual);
+            for (int i = 0; i < order; ++i)
+                worst = std::max(worst, std::fabs(actual[i] - expected[i]));
+        }
+    }
+    if (max_abs_err) *max_abs_err = worst;
+    return worst < 1.0e-4f;
+}
 
 bool pick_encoder_mode(int sample_rate, int channels, int bitrate_kbps,
                        int& out_rate, int& out_bitrate_kbps, std::string& error) {
@@ -299,6 +323,9 @@ Encoder::Encoder(const Config& cfg) : cfg_(cfg) {
     frame_bits_ = bitrate_bps_ * mtab_->size / sample_rate_;
 
     overlap_.assign(static_cast<size_t>(channels_) * mtab_->size, 0.0f);
+    analysis_window_.resize(static_cast<size_t>(mtab_->size) * 2);
+    for (int i = 0; i < mtab_->size * 2; ++i)
+        analysis_window_[i] = std::sin((i + 0.5f) * (kPi / (2.0f * mtab_->size)));
     tmp_.assign(static_cast<size_t>(mtab_->size) * 4 + 4096, 0.0f);
 
     for (int i = 0; i < 3; i++) {
@@ -318,7 +345,7 @@ Encoder::Encoder(const Config& cfg) : cfg_(cfg) {
 
     init_bitstream_params();
     if (cfg_.compensate_delay)
-        lead_left_ = 2;
+        lead_left_ = 1;
 }
 
 void Encoder::init_bitstream_params() {
@@ -647,8 +674,7 @@ void Encoder::analyze_lpc(const float* time_2n, float* lpc, float* lsp) {
     const int order = mtab_->n_lsp;
     std::vector<float> win(static_cast<size_t>(n) * 2);
     for (int i = 0; i < n * 2; i++) {
-        const float w = std::sin((static_cast<float>(i) + 0.5f) * (kPi / (2.0f * static_cast<float>(n))));
-        win[static_cast<size_t>(i)] = time_2n[i] * w;
+        win[static_cast<size_t>(i)] = time_2n[i] * analysis_window_[i];
     }
     std::vector<float> r(static_cast<size_t>(order) + 1);
     autocorr(win.data(), n * 2, r.data(), order);
@@ -799,7 +825,7 @@ void Encoder::quantize_ppc(int ch, float* spec) {
     g_coef_[ch] = 0;
 }
 
-void Encoder::quantize_main(const float* residual) {
+void Encoder::quantize_main(const float* residual, const float* weights) {
     const FrameType ftype = FrameType::Long;
     const int fi = static_cast<int>(ftype);
     const int16_t* cb0 = mtab_->fmode[fi].cb0;
@@ -807,6 +833,7 @@ void Encoder::quantize_main(const float* residual) {
     const int cb_len = mtab_->fmode[fi].cb_len_read;
     uint8_t* dst = main_coeffs_;
     int pos = 0;
+    std::vector<float> target(cb_len), weight(cb_len), rest(cb_len);
     for (int i = 0; i < n_div_[fi]; i++) {
         const int length = length_[fi][i >= length_change_[fi]];
         const int second = (i >= bits_main_spec_change_[fi]);
@@ -817,15 +844,24 @@ void Encoder::quantize_main(const float* residual) {
         const bool sign0_en = bits0 == 7;
         const bool sign1_en = bits1 == 7;
 
-        std::vector<float> target(static_cast<size_t>(length));
-        for (int j = 0; j < length; j++)
+        float max_weight = 1.0e-30f;
+        for (int j = 0; j < length; j++) {
             target[static_cast<size_t>(j)] = residual[permut_[fi][pos + j]];
+            weight[j] = weights[permut_[fi][pos + j]];
+            max_weight = std::max(max_weight, weight[j]);
+        }
+        for (int j = 0; j < length; ++j) weight[j] /= max_weight;
 
         int best0 = 0, best1 = 0, s0 = 1, s1 = 1;
         float best_e = 1.0e30f;
 
-        // Stage 1: cb0
-        float best_stage = 1.0e30f;
+        // Keep several first-stage choices: the closest cb0 alone need not
+        // belong to the best cb0+cb1 pair. Score in reconstructed MDCT units
+        // so LPC peaks do not amplify otherwise small quantization errors.
+        constexpr int beam_size = 4;
+        float beam_error[beam_size];
+        int beam_index[beam_size]{}, beam_sign[beam_size]{};
+        std::fill_n(beam_error, beam_size, 1.0e30f);
         for (int a = 0; a < n0; a++) {
             const int16_t* t0 = cb0 + a * cb_len;
             const int smax = sign0_en ? 2 : 1;
@@ -834,31 +870,62 @@ void Encoder::quantize_main(const float* residual) {
                 float e = 0;
                 for (int j = 0; j < length; j++) {
                     const float d = target[static_cast<size_t>(j)] - sg * t0[j];
-                    e += d * d;
+                    e += weight[j] * d * d;
                 }
-                if (e < best_stage) {
-                    best_stage = e;
-                    best0 = a;
-                    s0 = sg;
+                for (int slot = 0; slot < beam_size; ++slot) {
+                    if (e >= beam_error[slot]) continue;
+                    for (int k = beam_size - 1; k > slot; --k) {
+                        beam_error[k] = beam_error[k - 1];
+                        beam_index[k] = beam_index[k - 1];
+                        beam_sign[k] = beam_sign[k - 1];
+                    }
+                    beam_error[slot] = e; beam_index[slot] = a; beam_sign[slot] = sg;
+                    break;
                 }
             }
         }
-        const int16_t* t0 = cb0 + best0 * cb_len;
-        best_e = 1.0e30f;
-        for (int b = 0; b < n1; b++) {
-            const int16_t* t1 = cb1 + b * cb_len;
-            const int smax = sign1_en ? 2 : 1;
-            for (int s = 0; s < smax; s++) {
-                const int sg = (s == 0) ? 1 : -1;
-                float e = 0;
-                for (int j = 0; j < length; j++) {
-                    const float d = target[static_cast<size_t>(j)] - s0 * t0[j] - sg * t1[j];
-                    e += d * d;
+        for (int slot = 0; slot < beam_size; ++slot) {
+            if (!beam_sign[slot]) continue;
+            const int16_t* t0 = cb0 + beam_index[slot] * cb_len;
+            for (int j = 0; j < length; ++j) rest[j] = target[j] - beam_sign[slot] * t0[j];
+            for (int b = 0; b < n1; b++) {
+                const int16_t* t1 = cb1 + b * cb_len;
+                for (int s = 0; s < (sign1_en ? 2 : 1); s++) {
+                    const int sg = (s == 0) ? 1 : -1;
+                    float e = 0;
+                    for (int j = 0; j < length; j++) {
+                        const float d = rest[j] - sg * t1[j];
+                        e += weight[j] * d * d;
+                    }
+                    if (e < best_e) {
+                        best_e = e;
+                        best0 = beam_index[slot]; s0 = beam_sign[slot];
+                        best1 = b; s1 = sg;
+                    }
                 }
-                if (e < best_e) {
-                    best_e = e;
-                    best1 = b;
-                    s1 = sg;
+            }
+        }
+        // Coordinate refinement can only lower the error of the selected pair.
+        for (int pass = 0; pass < 2; ++pass) {
+            for (int stage = 0; stage < 2; ++stage) {
+                const int16_t* fixed = stage ? cb0 + best0 * cb_len : cb1 + best1 * cb_len;
+                const int sign = stage ? s0 : s1;
+                for (int j = 0; j < length; ++j) rest[j] = target[j] - sign * fixed[j];
+                const int16_t* cb = stage ? cb1 : cb0;
+                for (int a = 0; a < (stage ? n1 : n0); ++a) {
+                    for (int s = 0; s < ((stage ? sign1_en : sign0_en) ? 2 : 1); ++s) {
+                        const int sg = s ? -1 : 1;
+                        float e = 0;
+                        for (int j = 0; j < length; ++j) {
+                            const float d = rest[j] - sg * cb[a * cb_len + j];
+                            e += weight[j] * d * d;
+                        }
+                        if (e < best_e) {
+                            best_e = e;
+                            if (stage) { best1 = a; s1 = sg; }
+                            else { best0 = a; s0 = sg; }
+                        }
+                    }
                 }
             }
         }
@@ -879,8 +946,7 @@ void Encoder::mdct_channel(int ch, const float* time_2n, float* spec_n) {
     const int n = mtab_->size;
     std::vector<float> wbuf(static_cast<size_t>(n) * 2);
     for (int i = 0; i < n * 2; i++) {
-        const float w = std::sin((static_cast<float>(i) + 0.5f) * (kPi / (2.0f * static_cast<float>(n))));
-        wbuf[static_cast<size_t>(i)] = time_2n[i] * w;
+        wbuf[static_cast<size_t>(i)] = time_2n[i] * analysis_window_[i];
     }
     const float norm = (channels_ == 1) ? 2.0f : 1.0f;
     const float inv_scale = -kMdctPcmScale / std::sqrt(norm / static_cast<float>(n));
@@ -903,10 +969,9 @@ void Encoder::encode_frame(const float* interleaved_n, bool /*force_flush*/) {
         for (int i = 0; i < n; i++) {
             const float l = interleaved_n[i * 2];
             const float r = interleaved_n[i * 2 + 1];
-            // Decoder restores L/R as mid+side / mid-side (FFmpeg butterflies,
-            // no 1/2). Matching that mapping keeps amplitude aligned.
-            ms[static_cast<size_t>(i)] = l + r;
-            ms[static_cast<size_t>(n + i)] = l - r;
+            // Decoder restores L/R as mid+side / mid-side.
+            ms[static_cast<size_t>(i)] = 0.5f * (l + r);
+            ms[static_cast<size_t>(n + i)] = 0.5f * (l - r);
         }
     } else {
         std::memcpy(ms.data(), interleaved_n, static_cast<size_t>(n) * sizeof(float));
@@ -936,6 +1001,7 @@ void Encoder::encode_frame(const float* interleaved_n, bool /*force_flush*/) {
     }
 
     std::vector<float> residual(static_cast<size_t>(channels_) * n);
+    std::vector<float> weights(residual.size());
 
     for (int ch = 0; ch < channels_; ch++) {
         float* sp = spec.data() + ch * n;
@@ -970,22 +1036,39 @@ void Encoder::encode_frame(const float* interleaved_n, bool /*force_flush*/) {
         for (int i = 0; i < n; i++) {
             const float b = bark[static_cast<size_t>(i)];
             resid[i] = (std::fabs(b) > 1.0e-8f) ? sp[i] / b : sp[i];
+            const float synthesis_scale = env[i] * b;
+            weights[ch * n + i] = synthesis_scale * synthesis_scale;
         }
     }
 
-    {
-        const int tot = channels_ * n;
-        double e = 0;
-        for (int i = 0; i < tot; i++)
-            e += static_cast<double>(residual[static_cast<size_t>(i)]) * residual[static_cast<size_t>(i)];
-        const float rrms = static_cast<float>(std::sqrt(e / std::max(1, tot)));
-        if (rrms > kTargetResidRms * 1.25f) {
-            const float s = kTargetResidRms / rrms;
-            for (int i = 0; i < tot; i++)
-                residual[static_cast<size_t>(i)] *= s;
+    quantize_main(residual.data(), weights.data());
+    // Fit the transmitted channel gain to the actual selected vectors.
+    // A nominal codebook RMS alone cannot predict the energy of their sum.
+    std::vector<float> reconstructed(residual.size());
+    const auto& mode = mtab_->fmode[static_cast<int>(FrameType::Long)];
+    dequant(main_coeffs_, reconstructed.data(), FrameType::Long, mode.cb0, mode.cb1, mode.cb_len_read);
+    float old_gain[kChannelsMax * kSubblocksMax];
+    dec_gain(FrameType::Long, old_gain);
+    for (int ch = 0; ch < channels_; ++ch) {
+        double cross = 0, energy = 0;
+        for (int i = ch * n; i < (ch + 1) * n; ++i) {
+            cross += static_cast<double>(weights[i]) * residual[i] * reconstructed[i];
+            energy += static_cast<double>(weights[i]) * reconstructed[i] * reconstructed[i];
+        }
+        const float factor = energy > 1.0e-20 ? static_cast<float>(std::max(0.0, cross / energy)) : 1.0f;
+        gain_bits_[ch] = static_cast<uint8_t>(quantize_mu(old_gain[ch] * factor * 8192.0f,
+                                                       kAmpMax, kMulawMu, kGainBits));
+    }
+    float new_gain[kChannelsMax * kSubblocksMax];
+    dec_gain(FrameType::Long, new_gain);
+    for (int ch = 0; ch < channels_; ++ch) {
+        const float ratio = new_gain[ch] / old_gain[ch];
+        for (int i = ch * n; i < (ch + 1) * n; ++i) {
+            residual[i] /= ratio;
+            weights[i] *= ratio * ratio;
         }
     }
-    quantize_main(residual.data());
+    quantize_main(residual.data(), weights.data());
     write_frame_bits();
     frames_written_++;
 }
@@ -993,26 +1076,38 @@ void Encoder::encode_frame(const float* interleaved_n, bool /*force_flush*/) {
 void Encoder::feed(const float* interleaved, int frames) {
     if (flushed_)
         throw std::runtime_error("encoder already flushed");
+    if (frames < 0 || (frames > 0 && !interleaved))
+        throw std::invalid_argument("invalid PCM input");
+    if (frames == 0)
+        return;
     const int n = mtab_->size;
-    pcm_pending_.insert(pcm_pending_.end(), interleaved, interleaved + frames * channels_);
-
-    auto take_frame = [&](std::vector<float>& frame) {
-        frame.assign(static_cast<size_t>(n) * channels_, 0.0f);
-        if (lead_left_ > 0) {
-            lead_left_--;
-            return true;
+    const size_t need = static_cast<size_t>(n) * channels_;
+    if (lead_left_ > 0) {
+        std::vector<float> silence(need, 0.0f);
+        while (lead_left_ > 0) {
+            encode_frame(silence.data(), false);
+            --lead_left_;
         }
-        const int need = n * channels_;
-        if (static_cast<int>(pcm_pending_.size()) < need)
-            return false;
-        std::memcpy(frame.data(), pcm_pending_.data(), static_cast<size_t>(need) * sizeof(float));
-        pcm_pending_.erase(pcm_pending_.begin(), pcm_pending_.begin() + need);
-        return true;
-    };
-
-    std::vector<float> frame;
-    while (take_frame(frame))
-        encode_frame(frame.data(), false);
+    }
+    size_t remaining = static_cast<size_t>(frames) * channels_;
+    if (!pcm_pending_.empty()) {
+        const size_t take = std::min(need - pcm_pending_.size(), remaining);
+        pcm_pending_.insert(pcm_pending_.end(), interleaved, interleaved + take);
+        interleaved += take;
+        remaining -= take;
+        if (pcm_pending_.size() == need) {
+            encode_frame(pcm_pending_.data(), false);
+            pcm_pending_.clear();
+        }
+    }
+    // Process complete hops directly. Erasing the front of a whole-track
+    // buffer on every hop used quadratic time and copied gigabytes of PCM.
+    while (remaining >= need) {
+        encode_frame(interleaved, false);
+        interleaved += need;
+        remaining -= need;
+    }
+    pcm_pending_.insert(pcm_pending_.end(), interleaved, interleaved + remaining);
 }
 
 void Encoder::flush() {

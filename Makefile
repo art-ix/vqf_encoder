@@ -41,6 +41,7 @@ bin/vqf_decode: $(DECODE_OBJS) obj/vqf_decode.o | bin
 test: all
 	./bin/vqf_encode --list-modes
 	./bin/vqf_encode --test-mdct
+	./bin/vqf_encode --test-codec
 	./bin/vqf_encode --test-roundtrip 0.5
 
 clean:

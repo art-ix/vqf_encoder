@@ -137,6 +137,7 @@ match released TwinVQ tables.
 vqf_encode.exe --list-modes
 vqf_encode.exe -b 96 --title "Track" --artist "Name" input.wav out.vqf
 vqf_encode.exe --test-mdct
+vqf_encode.exe --test-codec
 vqf_encode.exe --test-roundtrip 0.5
 ```
 
@@ -155,8 +156,23 @@ vqf_encode.exe --test-roundtrip 0.5
 no `44_64` codebook. Highest 44.1 kHz stereo mode is 96 kbps.
 
 
-Input WAV is 16/24/32-bit PCM, mono or stereo. Other rates are linearly
+Input WAV is 16/24/32-bit PCM or 32-bit IEEE float, mono or stereo, including
+WAVE_FORMAT_EXTENSIBLE. Other rates are linearly
 resampled to the nearest TwinVQ rate.
+
+The encoder uses an FFT-based forward MDCT, reconstruction-weighted two-stage
+VQ searches, and fitted channel gains. See [quality measurements and regression
+checks](docs/encoder-quality.md) for the September 2026 fixes and their limits.
+
+`--test-mdct` checks forward/inverse transforms, overlap-add and LPC analysis.
+`--test-codec` checks all 18 mono/stereo modes, signal quality, gain, silence,
+priming, tail flushing and equivalence between whole-buffer and chunked input.
+Optional WAV-reader regression checks require Node.js:
+
+```
+node tools/test_wav.mjs bin/x64/Release/vqf_encode.exe
+node tools/compare_audio.mjs reference.wav decoded.wav
+```
 
 ## Authors
 

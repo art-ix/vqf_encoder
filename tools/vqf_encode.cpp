@@ -12,6 +12,8 @@
 #include <string>
 #include <vector>
 
+#include "codec_tests.hpp"
+
 namespace {
 
 uint16_t rd16(const uint8_t* p) { return uint16_t(p[0] | (p[1] << 8)); }
@@ -28,10 +30,11 @@ Wav read_wav(const std::string& path) {
     if (!in)
         throw std::runtime_error("cannot open " + path);
     std::vector<uint8_t> file((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-    if (file.size() < 44 || std::memcmp(file.data(), "RIFF", 4) != 0)
+    if (file.size() < 44 || std::memcmp(file.data(), "RIFF", 4) != 0 ||
+        std::memcmp(file.data() + 8, "WAVE", 4) != 0)
         throw std::runtime_error("not a RIFF/WAV file");
     size_t pos = 12;
-    int rate = 0, ch = 0, bps = 0;
+    int rate = 0, ch = 0, bps = 0, format = 0, block_align = 0;
     const uint8_t* data = nullptr;
     size_t data_size = 0;
     while (pos + 8 <= file.size()) {
@@ -39,19 +42,31 @@ Wav read_wav(const std::string& path) {
         std::memcpy(id, file.data() + pos, 4);
         const uint32_t sz = rd32(file.data() + pos + 4);
         pos += 8;
+        if (sz > file.size() - pos)
+            throw std::runtime_error("truncated WAV chunk");
         if (std::memcmp(id, "fmt ", 4) == 0 && sz >= 16) {
+            format = rd16(file.data() + pos);
             ch = rd16(file.data() + pos + 2);
             rate = static_cast<int>(rd32(file.data() + pos + 4));
+            block_align = rd16(file.data() + pos + 12);
             bps = rd16(file.data() + pos + 14);
+            if (format == 0xFFFE) {
+                static const uint8_t guid_tail[] = {0, 0, 0, 0, 0x10, 0, 0x80, 0, 0, 0xAA, 0, 0x38, 0x9B, 0x71};
+                if (sz < 40 || rd16(file.data() + pos + 16) < 22 ||
+                    std::memcmp(file.data() + pos + 26, guid_tail, sizeof(guid_tail)) != 0)
+                    throw std::runtime_error("unsupported extensible WAV format");
+                format = rd16(file.data() + pos + 24);
+            }
         } else if (std::memcmp(id, "data", 4) == 0) {
             data = file.data() + pos;
             data_size = sz;
-            break;
         }
         pos += sz + (sz & 1);
     }
-    if (!data || ch < 1 || ch > 2 || (bps != 16 && bps != 24 && bps != 32))
-        throw std::runtime_error("unsupported WAV (need 16/24/32-bit PCM, 1-2 ch)");
+    if (!data || rate <= 0 || ch < 1 || ch > 2 ||
+        !((format == 1 && (bps == 16 || bps == 24 || bps == 32)) || (format == 3 && bps == 32)) ||
+        block_align != (bps / 8) * ch || data_size % block_align != 0)
+        throw std::runtime_error("unsupported WAV (need 16/24/32-bit PCM or float32, 1-2 ch)");
     Wav w;
     w.rate = rate;
     w.channels = ch;
@@ -62,7 +77,11 @@ Wav read_wav(const std::string& path) {
         const uint8_t* s = data + i * static_cast<size_t>(stride);
         for (int c = 0; c < ch; c++) {
             float v = 0;
-            if (bps == 16) {
+            if (format == 3) {
+                const uint32_t u = rd32(s + c * 4);
+                std::memcpy(&v, &u, sizeof(v));
+                if (!std::isfinite(v)) throw std::runtime_error("non-finite float WAV sample");
+            } else if (bps == 16) {
                 v = static_cast<float>(static_cast<int16_t>(rd16(s + c * 2))) / 32768.0f;
             } else if (bps == 24) {
                 int32_t x = (s[c * 3] | (s[c * 3 + 1] << 8) | (s[c * 3 + 2] << 16));
@@ -108,6 +127,7 @@ void usage() {
     std::cerr << "usage: vqf_encode [options] input.wav output.vqf\n"
               << "       vqf_encode --list-modes\n"
               << "       vqf_encode --test-mdct\n"
+              << "       vqf_encode --test-codec\n"
               << "       vqf_encode --test-roundtrip [seconds]\n"
               << "\noptions:\n"
               << "  -b, --bitrate KBPS   total bitrate; snaps to a legal TwinVQ mode\n"
@@ -237,17 +257,23 @@ int test_roundtrip(double seconds) {
 } // namespace
 
 int main(int argc, char** argv) try {
+    if (argc >= 2 && std::string(argv[1]) == "--test-codec")
+        return test_codec();
     if (argc >= 2 && std::string(argv[1]) == "--list-modes") {
         list_modes();
         return 0;
     }
     if (argc >= 2 && std::string(argv[1]) == "--test-mdct") {
-        float e1 = 0, e2 = 0;
+        float e1 = 0, e2 = 0, e3 = 0, e4 = 0;
         const bool a = twinvq::imdct_self_test(&e1);
         const bool b = twinvq::mdct_roundtrip_test(&e2);
+        const bool c = twinvq::mdct_self_test(&e3);
+        const bool d = twinvq::lpc_analysis_self_test(&e4);
         std::cout << "imdct self-test " << (a ? "ok" : "FAIL") << " max abs err=" << e1 << "\n";
         std::cout << "mdct roundtrip  " << (b ? "ok" : "FAIL") << " max abs err=" << e2 << "\n";
-        return (a && b) ? 0 : 1;
+        std::cout << "mdct self-test  " << (c ? "ok" : "FAIL") << " max abs err=" << e3 << "\n";
+        std::cout << "lpc self-test   " << (d ? "ok" : "FAIL") << " max abs err=" << e4 << "\n";
+        return (a && b && c && d) ? 0 : 1;
     }
     if (argc >= 2 && std::string(argv[1]) == "--test-roundtrip") {
         const double sec = (argc >= 3) ? std::atof(argv[2]) : 0.6;

@@ -8,6 +8,9 @@
 
 namespace twinvq {
 
+// Verify LPC -> LSP analysis against known stable predictor polynomials.
+bool lpc_analysis_self_test(float* max_abs_err);
+
 class Encoder {
 public:
     struct Config {
@@ -16,7 +19,7 @@ public:
         int bitrate_kbps = 96; // total
         VqfTags tags;
         std::string version = "97012000";
-        // Prepend silent frames so the decoder's 2-frame prime is compensated.
+        // Prepend one hop; MDCT overlap supplies the other decoder priming hop.
         bool compensate_delay = true;
     };
 
@@ -52,7 +55,7 @@ private:
     void quantize_lsp(int ch, const float* target_lsp, float* rec_out);
     void quantize_gain_bark(int ch, const float* spec, int block_size);
     void quantize_ppc(int ch, float* spec);
-    void quantize_main(const float* residual);
+    void quantize_main(const float* residual, const float* weights);
     void write_frame_bits();
 
     // Decoder-identical helpers so envelopes match on the far side.
@@ -88,7 +91,7 @@ private:
 
     std::vector<float> overlap_;      // channels * N previous samples (mid/side)
     std::vector<float> pcm_pending_;  // interleaved leftover input
-    std::vector<float> lead_pad_;
+    std::vector<float> analysis_window_;
     int lead_left_ = 0;
     bool flushed_ = false;
 
