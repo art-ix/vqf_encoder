@@ -81,3 +81,28 @@ perceptual listening score.
 Next steps are temporal stability/tonality analysis, calibration of the
 relative masking curves, and integration with the forthcoming short-block
 path. No pre-echo improvement is claimed for this stage.
+
+
+## Rejected temporal threshold-growth experiment
+
+A one-block limiter was evaluated with a cap of four times each ear/band's
+previous unrestricted threshold. It updated from the original MDCT before
+candidate trials, reset on silence or resolution changes, and recovered on
+a steady spectrum. It was not retained; no temporal CLI option or Config
+field is provided by this experiment.
+
+The model's sequence invariance, onset response, recovery, silence and
+stereo 80/96 codec checks passed. A synthetic noise onset on a quiet tonal
+background gave only a negligible pre-attack error reduction while increasing
+error during the attack. This did not justify adding another quality mode.
+Private audio and its measurements are not included here.
+
+The limitation is structural: final weights are normalized relative to the
+mean threshold, so multiplying every threshold by a common factor cancels
+out. A spectral threshold cap is therefore not an absolute noise constraint
+and cannot directly constrain where reconstruction error occurs in time.
+
+Next: evaluate an explicitly time-local reconstruction-error objective around
+attacks, with gain and steady-region error guards. Keep the current relative
+masking model and Long default until a temporal change has evidence of a
+useful tradeoff; do not reintroduce this cap as a proven pre-echo improvement.
