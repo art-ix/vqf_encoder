@@ -137,13 +137,14 @@ int test_codec(bool lsp_search = twinvq::Encoder::Config{}.lsp_search,
     return 0;
 }
 
-int test_codec_adaptive() {
+int test_codec_adaptive(bool temporal_search = false) {
     using Encoder = twinvq::Encoder;
     for (int position : {1, 2, 3}) {
         const int bitrate = position == 1 ? 80 : 96;
         Encoder::Config cfg;
         cfg.bitrate_kbps = bitrate;
         cfg.block_mode = Encoder::BlockMode::Adaptive;
+        cfg.temporal_search = temporal_search;
         Encoder whole(cfg), chunked(cfg);
         const int n = whole.frame_samples(), frames = 10 * n + 17;
         if (whole.lookahead_samples() != n) throw std::runtime_error("incorrect adaptive lookahead");
@@ -218,6 +219,7 @@ int test_codec_adaptive() {
     // Short input and empty input exercise draining the lookahead queue.
     Encoder::Config cfg;
     cfg.block_mode = Encoder::BlockMode::Adaptive;
+    cfg.temporal_search = temporal_search;
     cfg.lsp_search = cfg.bark_search = false;
     for (int frames : {0, 17}) {
         Encoder enc(cfg);

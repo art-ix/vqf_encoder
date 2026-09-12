@@ -271,3 +271,18 @@ The default remains Long: synthetic pre-echo improvement does not establish
 better overall music quality. Detector and block selection need listening
 and further tuning. `--test-codec-adaptive` checks stereo attacks, release,
 chunking, short/empty input, flush and a pre-echo/gain regression.
+
+
+### Experimental time-domain candidate ranking
+
+`--temporal-search` ranks the existing LSP/Bark frame candidates using
+reconstructed time-domain error, emphasizing roughly 6 ms before an energy
+rise. It considers the committed overlap error and limits a candidate's
+spectral error to 5% above the best existing candidate for that frame.
+It adds encoding work but no input delay or bitstream fields.
+
+This is off by default (`--no-temporal-search`); the C++ setting is
+`Encoder::Config::temporal_search`. It can be combined with adaptive blocks
+and masking weights. Synthetic pre-echo/error tradeoffs require listening
+validation; no general music-quality improvement is claimed.
+See [time-domain ranking](docs/time-domain-ranking.md).

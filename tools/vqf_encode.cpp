@@ -127,6 +127,8 @@ void usage() {
               << "  --psychoacoustic    experimental masking weights (default: off)\n"
               << "  --no-psychoacoustic disable masking weights\n"
               << "  --block-mode MODE  blocks: long (default), short, medium, adaptive\n"
+              << "  --temporal-search  experimental time-domain candidate ranking\n"
+              << "  --no-temporal-search disable time-domain ranking (default)\n"
               << "  --vq-beam N        VQ breadth: auto (default), 4, 8, 16, 32\n"
               << "  --no-delay           do not prepend priming frames\n"
               << "\nfoobar2000 Converter:\n"
@@ -264,6 +266,8 @@ int main(int argc, char** argv) try {
         return test_codec(true, false);
     if (argc >= 2 && std::string(argv[1]) == "--test-codec-psychoacoustic")
         return test_codec(true, true, true);
+    if (argc >= 2 && std::string(argv[1]) == "--test-codec-time")
+        return test_codec_adaptive(true);
     if (argc >= 2 && std::string(argv[1]) == "--test-codec-adaptive")
         return test_codec_adaptive();
     if (argc >= 2 && std::string(argv[1]) == "--test-codec-short")
@@ -344,6 +348,10 @@ int main(int argc, char** argv) try {
             else if (value == "medium") cfg.block_mode = twinvq::Encoder::BlockMode::Medium;
             else if (value == "adaptive") cfg.block_mode = twinvq::Encoder::BlockMode::Adaptive;
             else throw std::invalid_argument("block mode must be long, short, medium or adaptive");
+        } else if (a == "--temporal-search") {
+            cfg.temporal_search = true;
+        } else if (a == "--no-temporal-search") {
+            cfg.temporal_search = false;
         } else if (a == "--vq-beam") {
             const std::string value = need("--vq-beam");
             if (value == "auto") cfg.vq_beam = 0;

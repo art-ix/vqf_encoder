@@ -47,6 +47,7 @@ test: all
 	./bin/vqf_encode --test-codec-short
 	./bin/vqf_encode --test-codec-medium
 	./bin/vqf_encode --test-codec-adaptive
+	./bin/vqf_encode --test-codec-time
 	./bin/vqf_encode --test-codec-psychoacoustic
 	./bin/vqf_encode --test-codec-lsp
 	./bin/vqf_encode --test-codec-bark

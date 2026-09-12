@@ -1224,6 +1224,37 @@ void Encoder::encode_frame(const float* interleaved_n, bool force_flush, bool ne
         std::memcpy(ms.data(), interleaved_n, static_cast<size_t>(n) * sizeof(float));
     }
 
+    // Independent L/R weights on the two PCM hops known to this frame.
+    // Emphasize two roughly 3 ms slices preceding a sharp energy rise. Ordinary
+    // samples retain unit weight, so the objective still penalizes all error.
+    std::vector<float> time_weights;
+    if (cfg_.temporal_search) {
+        time_weights.assign(channels_ * 2 * n, 1.0f);
+        temporal_error_state_.resize(channels_ * 2 * n, 0.0f);
+        const int slice = std::max(1, sample_rate_ * 3 / 1000);
+        for (int ch = 0; ch < channels_; ++ch) {
+            std::vector<double> energy((2 * n + slice - 1) / slice);
+            for (int i = 0; i < 2 * n; ++i) {
+                const auto& source = i < n ? overlap_ : ms;
+                const int pos = i % n;
+                const double mid = source[pos];
+                const double side = channels_ == 2 ? source[n + pos] : 0;
+                const double x = ch == 0 ? mid + side : mid - side;
+                energy[i / slice] += x * x;
+            }
+            double peak = 0;
+            for (int j = 0; j < static_cast<int>(energy.size()); ++j) {
+                energy[j] /= std::min(slice, 2 * n - j * slice);
+                peak = std::max(peak, energy[j]);
+            }
+            for (int j = 1; j < static_cast<int>(energy.size()); ++j) {
+                if (energy[j] <= 8.0 * std::max(energy[j - 1], peak * 1.0e-8) || energy[j] == 0) continue;
+                for (int i = std::max(0, (j - 2) * slice); i < j * slice; ++i)
+                    time_weights[ch * 2 * n + i] = 4.0f;
+            }
+        }
+    }
+
     std::vector<float> spec(static_cast<size_t>(channels_) * n, 0.0f);
     std::vector<float> time2n(static_cast<size_t>(n) * 2);
     std::vector<float> target_lsps(static_cast<size_t>(channels_) * kLspCoefsMax, 0.0f);
@@ -1271,6 +1302,51 @@ void Encoder::encode_frame(const float* interleaved_n, bool force_flush, bool ne
     const auto prior_bark = snapshot(bark_hist_);
     using TrialKey = std::array<uint8_t, 1 + kChannelsMax * (2 + kLspSplitMax)>;
     std::vector<TrialKey> evaluated;
+    struct TimeTrial {
+        double spectral;
+        double temporal;
+        std::array<LspSearch, 2> strategy;
+        bool bark;
+    };
+    std::vector<TimeTrial> time_trials;
+    std::vector<float> trial_error_state;
+    auto time_score = [&](const std::vector<float>& delta) {
+        const auto layout = window_layout(*mtab_, ftype_, window_type_);
+        const auto next = window_layout(*mtab_, window_frame_type(next_window_type_), next_window_type_);
+        trial_error_state.assign(channels_ * 2 * n, 0.0f);
+        std::vector<float> errors(channels_ * 2 * n), half(n), zero(n), future(2 * n);
+        const float scale = -std::sqrt((channels_ == 1 ? 2.0f : 1.0f) / block_size) / kMdctPcmScale;
+        for (int ch = 0; ch < channels_; ++ch) {
+            for (int j = 0; j < sub; ++j)
+                imdct_half(half.data() + j * block_size, delta.data() + ch * n + j * block_size, block_size, scale);
+            const float* previous = temporal_error_state_.data() + ch * 2 * n + temporal_error_position_;
+            float* current = trial_error_state.data() + ch * 2 * n;
+            synthesize_window(layout, half.data(), previous, current);
+            const int prefix = n - layout.output_size;
+            for (int i = 0; i < n; ++i)
+                errors[ch * 2 * n + i] = i < prefix ? previous[i] : current[i - prefix];
+            // The next frame's quantization is unknown. Project this frame's
+            // tail with zero future error; never alter the persistent state.
+            std::fill(future.begin(), future.end(), 0.0f);
+            synthesize_window(next, zero.data(), current + layout.output_size, future.data());
+            const int next_prefix = n - next.output_size;
+            for (int i = 0; i < n; ++i)
+                errors[ch * 2 * n + n + i] = i < next_prefix ? current[layout.output_size + i]
+                                                                           : future[i - next_prefix];
+        }
+        double error = 0;
+        for (int i = 0; i < 2 * n; ++i) {
+            const double mid = errors[i], side = channels_ == 2 ? errors[2 * n + i] : 0;
+            error += time_weights[i] * (mid + side) * (mid + side);
+            if (channels_ == 2) error += time_weights[2 * n + i] * (mid - side) * (mid - side);
+        }
+        return error;
+    };
+    auto commit_time_state = [&]() {
+        if (!cfg_.temporal_search) return;
+        temporal_error_state_ = trial_error_state;
+        temporal_error_position_ = window_layout(*mtab_, ftype_, window_type_).output_size;
+    };
     auto trial = [&](const std::array<LspSearch, 2>& strategy, bool bark_search) {
         restore(lsp_hist_, prior_lsp);
         restore(bark_hist_, prior_bark);
@@ -1296,6 +1372,8 @@ void Encoder::encode_frame(const float* interleaved_n, bool force_flush, bool ne
 
         std::vector<float> residual(static_cast<size_t>(channels_) * n);
         std::vector<float> weights(residual.size());
+        std::vector<float> scales(cfg_.temporal_search ? residual.size() : 0);
+        std::vector<float> offsets(scales.size(), 0.0f);
 
         for (int ch = 0; ch < channels_; ch++) {
             float* sp = spec.data() + ch * n;
@@ -1319,8 +1397,10 @@ void Encoder::encode_frame(const float* interleaved_n, bool force_flush, bool ne
                         mtab_->ppc_shape_cb + cb_len_p * kPpcShapeCbSize, cb_len_p);
                 std::vector<float> ppc_add(static_cast<size_t>(n), 0.0f);
                 decode_ppc(p_coef_[ch], g_coef_[ch], ppc_shape.data() + ch * mtab_->ppc_shape_len, ppc_add.data());
-                for (int i = 0; i < n; i++)
+                for (int i = 0; i < n; i++) {
                     sp[i] -= ppc_add[static_cast<size_t>(i)];
+                    if (cfg_.temporal_search) offsets[ch * n + i] = env[i] * ppc_add[i];
+                }
             }
             if (sub > 1) {
                 double target[kSubblocksMax]{}, importance[kSubblocksMax];
@@ -1348,8 +1428,25 @@ void Encoder::encode_frame(const float* interleaved_n, bool force_flush, bool ne
                 resid[i] = (std::fabs(b) > 1.0e-8f) ? sp[i] / b : sp[i];
                 const float synthesis_scale = env[i] * b;
                 weights[ch * n + i] = synthesis_scale * synthesis_scale * perceptual[ch * n + i];
+                if (cfg_.temporal_search) scales[ch * n + i] = synthesis_scale;
             }
         }
+
+        auto finish_trial = [&](double spectral, const float* base) {
+            if (!cfg_.temporal_search) return spectral;
+            const auto& mode = mtab_->fmode[static_cast<int>(ftype_)];
+            std::vector<float> delta(residual.size());
+            dequant(main_coeffs_, delta.data(), ftype_, mode.cb0, mode.cb1, mode.cb_len_read);
+            float gain[kChannelsMax * kSubblocksMax];
+            dec_gain(ftype_, gain);
+            for (int k = 0; k < channels_ * sub; ++k) {
+                const float ratio = gain[k] / base[k];
+                for (int i = k * block_size; i < (k + 1) * block_size; ++i)
+                    delta[i] = delta[i] * scales[i] * ratio + offsets[i] - original_spec[i];
+            }
+            time_trials.push_back({spectral, time_score(delta), strategy, bark_search});
+            return spectral;
+        };
 
         if (sub > 1) {
             const auto target = residual;
@@ -1410,7 +1507,7 @@ void Encoder::encode_frame(const float* interleaved_n, bool force_flush, bool ne
                     }
                 }
             }
-            return best_error;
+            return finish_trial(best_error, base);
         }
 
         // All candidates are scored against the same target and synthesis envelope.
@@ -1536,11 +1633,12 @@ void Encoder::encode_frame(const float* interleaved_n, bool force_flush, bool ne
         // retain_candidate still guards against floating-point scoring ties.
         if (fit_candidate_gain()) retain_candidate();
         restore_best();
-        return best_error;
+        return finish_trial(best_error, base_gain);
     };
 
     double selected_error = trial({LspSearch::Basic, LspSearch::Basic}, false);
     if (!cfg_.lsp_search && !cfg_.bark_search) {
+        commit_time_state();
         write_frame_bits();
         frames_written_++;
         return;
@@ -1582,6 +1680,22 @@ void Encoder::encode_frame(const float* interleaved_n, bool force_flush, bool ne
             selected_lsp_state = snapshot(lsp_hist_);
             selected_bark_state = snapshot(bark_hist_);
         }
+    }
+    if (cfg_.temporal_search) {
+        // Keep a hard per-frame spectral guard relative to the best existing
+        // candidate. This is not a whole-track SNR guarantee across histories.
+        const TimeTrial* winner = nullptr;
+        for (const auto& candidate : time_trials)
+            if (candidate.spectral <= selected_error * 1.05 &&
+                (!winner || candidate.temporal < winner->temporal)) winner = &candidate;
+        if (!winner) throw std::runtime_error("no finite temporal candidate");
+        const auto chosen = *winner;
+        evaluated.clear();
+        trial(chosen.strategy, chosen.bark); // Regenerate only the selected frame state.
+        commit_time_state();
+        write_frame_bits();
+        frames_written_++;
+        return;
     }
     restore(main_coeffs_, selected_main);
     restore(gain_bits_, selected_gain);

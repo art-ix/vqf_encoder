@@ -106,3 +106,8 @@ Next: evaluate an explicitly time-local reconstruction-error objective around
 attacks, with gain and steady-region error guards. Keep the current relative
 masking model and Long default until a temporal change has evidence of a
 useful tradeoff; do not reintroduce this cap as a proven pre-echo improvement.
+
+
+An independent [time-domain candidate-ranking experiment](time-domain-ranking.md)
+is now available as `--temporal-search`. It does not reinstate the rejected
+threshold cap; it scores reconstructed error after IMDCT/window synthesis.

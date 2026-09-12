@@ -33,6 +33,8 @@ public:
         bool psychoacoustic = false;
         // Experimental fixed or transient-adaptive blocks; Long remains default.
         BlockMode block_mode = BlockMode::Long;
+        // Experimental time-domain ranking of existing frame candidates.
+        bool temporal_search = false;
     };
 
     explicit Encoder(const Config& cfg);
@@ -116,6 +118,8 @@ private:
     double attack_energy_[2]{};
     double attack_high_energy_[2]{};
     float attack_previous_[2]{};
+    std::vector<float> temporal_error_state_;
+    int temporal_error_position_ = 0;
     int lead_left_ = 0;
     bool flushed_ = false;
 
