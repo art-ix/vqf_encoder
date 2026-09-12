@@ -1597,7 +1597,9 @@ void Encoder::encode_frame(const float* interleaved_n, bool force_flush, bool ne
     frames_written_++;
 }
 
-// Compare short-time energy with a 15 ms causal envelope. First differences
+// Compare short-time energy with a fast-attack, 15 ms release envelope.
+// Raising the reference immediately prevents repeated detections while the
+// smoothed average is still catching up with an existing attack. First differences
 // also catch bright attacks on a sustained bass. Analyze original L/R
 // independently so an attack cannot disappear in the mid/side conversion.
 // The absolute floor is numerical gating, not a calibrated hearing threshold.
@@ -1620,8 +1622,8 @@ bool Encoder::detect_attack(const float* pcm) {
             high /= block;
             attack |= energy > 8.0 * std::max(attack_energy_[ch], 1.0e-10)
                    || high > 12.0 * std::max(attack_high_energy_[ch], 1.0e-10);
-            attack_energy_[ch] = release * attack_energy_[ch] + (1.0 - release) * energy;
-            attack_high_energy_[ch] = release * attack_high_energy_[ch] + (1.0 - release) * high;
+            attack_energy_[ch] = std::max(release * attack_energy_[ch], energy);
+            attack_high_energy_[ch] = std::max(release * attack_high_energy_[ch], high);
         }
     }
     return attack;

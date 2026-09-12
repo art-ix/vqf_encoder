@@ -98,7 +98,11 @@ measurements and listening; do not infer overall quality from one metric.
 
 `--block-mode adaptive` (`Encoder::BlockMode::Adaptive`) uses original L/R
 PCM in Short-sized slices. Per-channel mean-square energy and first-difference
-energy are compared with causal 15 ms envelopes. Initial trigger ratios are
+energy are compared with causal fast-attack envelopes with a 15 ms release.
+The reference rises immediately to the current energy and decays exponentially;
+a smoothed average can lag an existing attack and trigger again during its
+rise. This avoids extending Short runs solely because the reference has not
+caught up. Initial trigger ratios are
 8 and 12 respectively, with a numerical floor of `1e-10`. They are heuristics,
 not calibrated hearing thresholds. No channel averaging hides side attacks.
 
