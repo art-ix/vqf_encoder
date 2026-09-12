@@ -5,4 +5,5 @@
 #include <SDK/file.h>
 #include <SDK/audio_chunk.h>
 #include <SDK/advconfig.h>
+#include <SDK/advconfig_impl.h>
 #include <SDK/audioEncoder.h>

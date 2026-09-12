@@ -26,8 +26,8 @@ int pick_bitrate(int sample_rate, int channels) {
 
 class vqf_instance : public fb2k::audioEncoderInstance {
 public:
-    vqf_instance(file::ptr out, const fb2k::audioEncoderSetup_t& setup, abort_callback& abort)
-        : m_out(out), m_abort(abort) {
+    vqf_instance(file::ptr out, const fb2k::audioEncoderSetup_t& setup, abort_callback&)
+        : m_out(out) {
         const int ch = static_cast<int>(setup.spec.chanCount);
         const int rate = static_cast<int>(setup.spec.sampleRate);
         twinvq::Encoder::Config cfg;
@@ -39,8 +39,7 @@ public:
         m_spec = setup.spec;
     }
 
-    void addChunk(const audio_chunk& chunk, abort_callback& abort) override {
-        m_abort = abort;
+    void addChunk(const audio_chunk& chunk, abort_callback&) override {
         const t_size frames = chunk.get_sample_count();
         const unsigned ch = chunk.get_channel_count();
         if (ch != static_cast<unsigned>(m_enc->channels()))
@@ -53,7 +52,6 @@ public:
     }
 
     void finalize(abort_callback& abort) override {
-        m_abort = abort;
         m_enc->flush();
         const auto file = m_enc->build_file();
         m_out->write(file.data(), file.size(), abort);
@@ -61,7 +59,6 @@ public:
 
 private:
     file::ptr m_out;
-    abort_callback& m_abort;
     audio_chunk::spec_t m_spec{};
     std::unique_ptr<twinvq::Encoder> m_enc;
     std::vector<float> m_pcm;
