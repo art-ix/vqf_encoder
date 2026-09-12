@@ -1,8 +1,8 @@
 # TwinVQ / VQF encoder for foobar2000
 
 Independent TwinVQ encoder for Windows. It writes NTT / Yamaha SoundVQ files
-(`.vqf`) from WAV, and registers a native encoder plus a Converter-friendly
-CLI for [foobar2000](https://www.foobar2000.org/).
+(`.vqf`) from WAV. For [foobar2000](https://www.foobar2000.org/) the encoder is
+built into a single component DLL — no `vqf_encode.exe` is required.
 
 The codec implementation does **not** use FFmpeg, `tvqenc.dll`, or the Yamaha
 SoundVQ SDK. Bitstream, codebooks and VQF chunks match
@@ -14,17 +14,16 @@ SoundVQ SDK. Bitstream, codebooks and VQF chunks match
 
 Download the Windows x64 zip from [Releases](https://github.com/art-ix/vqf_encoder/releases/latest):
 
-* `foo_enc_vqf.dll` — native foobar2000 2.x encoder component
-* `vqf_encode.exe` — Converter / CLI encoder
-* `vqf_decode.exe` — CLI decoder for roundtrip tests
+* `foo_enc_vqf.dll` — **the only file foobar2000 needs** (encoder is inside the DLL)
+* `vqf_encode.exe` / `vqf_decode.exe` — optional standalone CLI, not used by the component
 
 ## Features
 
 * Encode TwinVQ / VQF (the proprietary NTT bitstream, not MPEG-4 TwinVQ)
 * Modes from 8 kHz / 8 kbit/s/ch up to 44.1 kHz / 48 kbit/s/ch
 * Write VQF metadata (NAME, AUTH, COMT, (c), ALBM, GENR, TRCK, YEAR, MUSC, LABL)
-* `vqf_encode.exe` CLI for foobar2000 Converter
-* Native `fb2k::audioEncoder` service (foobar2000 2.x)
+* foobar2000 2.x: native encoder in `foo_enc_vqf.dll` (Convert → TwinVQ / VQF)
+* Optional CLI tools for encode/decode outside foobar2000
 
 ## Layout
 
@@ -95,28 +94,35 @@ msbuild tools\vqf_encode.vcxproj /p:Configuration=Release /p:Platform=x64
 
 ## Install the foobar2000 component
 
-Copy `foo_enc_vqf.dll` into the foobar2000 **components** folder, then restart.
+Copy **only** `foo_enc_vqf.dll` into the foobar2000 **components** folder, then
+restart. Do not copy `vqf_encode.exe` or `vqf_decode.exe` there.
 
 ```
 C:\Program Files\foobar2000\components\foo_enc_vqf.dll
 ```
+
+The TwinVQ encoder (codebooks, MDCT, bitstream) is linked into that DLL.
 
 Keep `foo_input_vqf.dll` installed if you want to play the files you encode.
 
 Check **File → Preferences → Components** for “TwinVQ encoder”.
 Bitrate is under **Preferences → Advanced → TwinVQ encoder**.
 
-## Converter (CLI)
+## Convert
 
-Copy `vqf_encode.exe` next to foobar2000 (or into `encoders\`). Add a custom
-Converter preset:
+Right-click tracks → **Convert → TwinVQ / VQF**. A settings dialog asks for
+bitrate (total kbps) and destination (same folder as the source, like Quick
+convert, or a folder you pick). Encoding runs inside the DLL.
 
-| Field | Value |
-| --- | --- |
-| Encoder | `vqf_encode.exe` |
-| Extension | `vqf` |
-| Parameters | `-b 96 %s %d` |
-| Format | WAV (temp file, `%s`) |
+foobar2000’s **Quick convert** list and **Convert → …** Output format dropdown
+are owned by `foo_converter` and only show built-in PCM formats plus
+command-line encoder presets. A native component cannot add a row there
+without an external EXE. Use **Convert → TwinVQ / VQF** instead.
+
+## Standalone CLI (optional)
+
+`vqf_encode.exe` / `vqf_decode.exe` are for use outside foobar2000. They are
+not required by the component.
 
 Bitrate `-b` is **total** kbps. Stereo 44.1 kHz uses **80 or 96 kbps**
 (40 or 48 kbps/ch). The encoder snaps to the nearest legal TwinVQ mode.

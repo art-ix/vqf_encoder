@@ -219,9 +219,19 @@ int quantize_mu(float linear, float clip, float mu, int bits) {
     const int maxv = (1 << bits) - 1;
     const float step = clip / static_cast<float>(maxv);
     const float y = mulaw(linear, clip, mu);
-    int idx = static_cast<int>(std::floor((y / step) - 0.5f + 0.5f));
+    const int idx = static_cast<int>(std::lrint(y / step));
     return std::clamp(idx, 0, maxv);
 }
+
+// Main-codebook vectors live around this RMS (Yamaha 44.1 kHz / 48 kbps/ch
+// long frames measure ~6e3). Gain maps flattened MDCT onto that scale.
+constexpr float kTargetResidRms = 6000.0f;
+
+// Decoder IMDCT applies /32768 so float PCM matches 16-bit TwinVQ. Putting
+// that factor into the analysis MDCT saturates the 8-bit mu-law gain (max
+// ~1.59 vs ~0.05 on real Yamaha files) and leaves a residual the VQ cannot
+// represent — audible noise. 16384 lands typical music in that domain.
+constexpr float kMdctPcmScale = 16384.0f;
 
 } // namespace
 
@@ -632,15 +642,16 @@ void Encoder::write_frame_bits() {
         put_bit(0);
 }
 
-void Encoder::analyze_lpc(const float* time_n, float* lpc, float* lsp) {
+void Encoder::analyze_lpc(const float* time_2n, float* lpc, float* lsp) {
     const int n = mtab_->size;
     const int order = mtab_->n_lsp;
-    std::vector<float> win(static_cast<size_t>(n));
-    const float* sw = sine_window_cached(n);
-    for (int i = 0; i < n; i++)
-        win[static_cast<size_t>(i)] = time_n[i] * sw[i];
+    std::vector<float> win(static_cast<size_t>(n) * 2);
+    for (int i = 0; i < n * 2; i++) {
+        const float w = std::sin((static_cast<float>(i) + 0.5f) * (kPi / (2.0f * static_cast<float>(n))));
+        win[static_cast<size_t>(i)] = time_2n[i] * w;
+    }
     std::vector<float> r(static_cast<size_t>(order) + 1);
-    autocorr(win.data(), n, r.data(), order);
+    autocorr(win.data(), n * 2, r.data(), order);
     levinson(r.data(), order, lpc);
     lpc_to_lsp(lpc, order, lsp);
 }
@@ -724,23 +735,21 @@ void Encoder::quantize_gain_bark(int ch, const float* spec, int block_size) {
         energy += static_cast<double>(spec[i]) * spec[i];
     const float rms = static_cast<float>(std::sqrt(energy / std::max(1, block_size)));
 
-    // Decoder: gain = (1/8192) * mulawinv(q). Invert for a first guess.
-    const float target_lin = rms * 8192.0f;
+    // Decoder: gain = (1/8192) * mulawinv(q). Set it so spec/gain has codebook RMS.
+    const float target_gain = std::max(rms / kTargetResidRms, 1.0e-8f);
+    const float target_lin = target_gain * 8192.0f;
     gain_bits_[ch] = static_cast<uint8_t>(quantize_mu(target_lin, kAmpMax, kMulawMu, kGainBits));
 
     float gtmp[kChannelsMax * kSubblocksMax];
     // Peek decoded gain without destroying other channels' bits: only this ch matters for long.
     dec_gain(FrameType::Long, gtmp);
     const float gain = gtmp[ch];
-    const float inv_g = (std::fabs(gain) > 1.0e-12f) ? 1.0f / gain : 1.0f;
 
     const int fi = static_cast<int>(FrameType::Long);
     const int bark_n_coef = mtab_->fmode[fi].bark_n_coef;
     const int fw_cb_len = mtab_->fmode[fi].bark_env_size / bark_n_coef;
     const int n_bit = mtab_->fmode[fi].bark_n_bit;
     const int n_ent = 1 << n_bit;
-
-    // Band means of |spec| / gain  (want st ≈ band / 1 after +1).
     std::vector<float> band(static_cast<size_t>(mtab_->fmode[fi].bark_env_size), 0.0f);
     int pos = 0;
     int idx = 0;
@@ -749,9 +758,14 @@ void Encoder::quantize_gain_bark(int ch, const float* spec, int block_size) {
             const int w = mtab_->fmode[fi].bark_tab[idx];
             double s = 0;
             for (int k = 0; k < w && pos + k < block_size; k++)
-                s += std::fabs(spec[pos + k]);
-            const float mean = (w > 0) ? static_cast<float>(s / w) * inv_g : 1.0f;
-            band[static_cast<size_t>(idx)] = mean - 1.0f; // tmp2 target
+                s += static_cast<double>(spec[pos + k]) * spec[pos + k];
+            // Decoder: bark = (tmp2+1) * gain, spectrum = VQ * bark.
+            // VQ lives near kTargetResidRms, so (tmp2+1) should be
+            // rms(spec_band) / (gain * kTargetResidRms), not rms/gain.
+            const float st = (w > 0 && std::fabs(gain) > 1.0e-12f)
+                                 ? static_cast<float>(std::sqrt(s / w)) / (gain * kTargetResidRms)
+                                 : 1.0f;
+            band[static_cast<size_t>(idx)] = st - 1.0f;
             pos += w;
         }
     }
@@ -869,7 +883,7 @@ void Encoder::mdct_channel(int ch, const float* time_2n, float* spec_n) {
         wbuf[static_cast<size_t>(i)] = time_2n[i] * w;
     }
     const float norm = (channels_ == 1) ? 2.0f : 1.0f;
-    const float inv_scale = -32768.0f / std::sqrt(norm / static_cast<float>(n));
+    const float inv_scale = -kMdctPcmScale / std::sqrt(norm / static_cast<float>(n));
     const float fwd = (2.0f / static_cast<float>(n)) * inv_scale;
     mdct_forward(spec_n, wbuf.data(), n, fwd);
     (void)ch;
@@ -889,8 +903,10 @@ void Encoder::encode_frame(const float* interleaved_n, bool /*force_flush*/) {
         for (int i = 0; i < n; i++) {
             const float l = interleaved_n[i * 2];
             const float r = interleaved_n[i * 2 + 1];
-            ms[static_cast<size_t>(i)] = 0.5f * (l + r);
-            ms[static_cast<size_t>(n + i)] = 0.5f * (l - r);
+            // Decoder restores L/R as mid+side / mid-side (FFmpeg butterflies,
+            // no 1/2). Matching that mapping keeps amplitude aligned.
+            ms[static_cast<size_t>(i)] = l + r;
+            ms[static_cast<size_t>(n + i)] = l - r;
         }
     } else {
         std::memcpy(ms.data(), interleaved_n, static_cast<size_t>(n) * sizeof(float));
@@ -913,7 +929,7 @@ void Encoder::encode_frame(const float* interleaved_n, bool /*force_flush*/) {
         float lpc[kLspCoefsMax + 1];
         float lsp[kLspCoefsMax];
         float rec_lsp[kLspCoefsMax];
-        analyze_lpc(cur, lpc, lsp);
+        analyze_lpc(time2n.data(), lpc, lsp);
         quantize_lsp(ch, lsp, rec_lsp);
         std::memcpy(rec_lsps.data() + static_cast<size_t>(ch) * kLspCoefsMax, rec_lsp,
                     sizeof(float) * static_cast<size_t>(mtab_->n_lsp));
@@ -957,6 +973,18 @@ void Encoder::encode_frame(const float* interleaved_n, bool /*force_flush*/) {
         }
     }
 
+    {
+        const int tot = channels_ * n;
+        double e = 0;
+        for (int i = 0; i < tot; i++)
+            e += static_cast<double>(residual[static_cast<size_t>(i)]) * residual[static_cast<size_t>(i)];
+        const float rrms = static_cast<float>(std::sqrt(e / std::max(1, tot)));
+        if (rrms > kTargetResidRms * 1.25f) {
+            const float s = kTargetResidRms / rrms;
+            for (int i = 0; i < tot; i++)
+                residual[static_cast<size_t>(i)] *= s;
+        }
+    }
     quantize_main(residual.data());
     write_frame_bits();
     frames_written_++;
