@@ -1,7 +1,8 @@
 # Transient block switching: implementation prerequisites
 
-Status: experimental fixed short/medium encoding is implemented. Automatic
-transient detection and adaptive scheduling are still pending.
+Status: experimental fixed short/medium encoding and adaptive Long/Short
+scheduling are implemented. Long remains the default; tuning and listening
+validation of adaptive quality remain pending.
 
 ## Fixed-block implementation
 
@@ -89,6 +90,34 @@ nine window IDs decode to byte-identical PCM before and after extraction in
 all 18 mode/channel combinations. No music material or music-derived results
 are included here.
 
-Next: add a stereo-aware transient detector and adaptive legal window
-scheduling, then evaluate attack/pre-echo behavior and listening quality.
-Fixed-block support does not establish a pre-echo improvement by itself.
+Next: tune the adaptive detector and block decisions using temporal error
+measurements and listening; do not infer overall quality from one metric.
+
+
+## Adaptive Long/Short scheduling
+
+`--block-mode adaptive` (`Encoder::BlockMode::Adaptive`) uses original L/R
+PCM in Short-sized slices. Per-channel mean-square energy and first-difference
+energy are compared with causal 15 ms envelopes. Initial trigger ratios are
+8 and 12 respectively, with a numerical floor of `1e-10`. They are heuristics,
+not calibrated hearing thresholds. No channel averaging hides side attacks.
+
+A one-hop queue gives the scheduler the upcoming attack flag. Each frame
+honors the window already used by the previous frame's analysis; only its
+successor is selected. The legal subset is 0 -> 2, 2 -> 2/3, 3 -> 0/2, and
+0 -> 0. Two overlapping frames cover an attack. The final buffered hop is
+encoded before the zero flush hop, which closes any Short overlap with 3.
+Medium selection is intentionally deferred; its fixed mode remains available.
+
+The extra buffering is one hop, reported by `lookahead_samples()` and CLI.
+It does not add output samples or another priming frame. Memory is bounded,
+and irregular feed calls make the same decisions as whole-buffer input.
+The default Long path bypasses both the queue and detector.
+
+The window oracle includes repeated Short exits/reentries. The targeted
+adaptive codec suite covers stereo 80/96 kbps, side-only attacks, release,
+window legality, chunking, decoded length, short/empty input and pre-attack
+energy with an attack-gain guard. External FFmpeg decoding is also checked
+on synthetic and private local inputs. Private audio and measurements stay
+outside Git. Adaptive mode remains experimental: lower pre-echo can trade
+off against other reconstruction errors; no listening improvement is claimed.

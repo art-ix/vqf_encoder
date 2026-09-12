@@ -242,7 +242,7 @@ measurement results are included in the repository.
 gain refinement and frame-candidate selection. It is **off by default**;
 `--no-psychoacoustic` explicitly restores the existing objective. Frame sizes
 and decoder compatibility are unchanged. This is an initial model awaiting
-listening-based tuning, without temporal masking or automatic short-block switching.
+listening-based tuning, without temporal masking. Adaptive blocks are a separate experimental option.
 See [model details and tests](docs/psychoacoustic-model.md).
 
 
@@ -252,7 +252,21 @@ See [model details and tests](docs/psychoacoustic-model.md).
 for evaluation. The default `--block-mode long` retains the existing path.
 The C++ setting is `Encoder::Config::block_mode` (`Encoder::BlockMode`).
 These modes implement subblock analysis, Bark/gain quantization and VQ;
-automatic transient detection is still pending. Fixed short blocks are not
+automatic transient detection is available separately with `adaptive`. Fixed short blocks are not
 recommended as a general music-quality setting.
 
 See [implementation and validation](docs/transient-block-implementation.md).
+
+
+`--block-mode adaptive` enables experimental transient detection and Long/Short
+switching. The detector examines L/R energy and first differences; both
+frames around an attack use Short, followed by the exit window and Long.
+Medium blocks are currently available only in the fixed evaluation mode.
+
+Adaptive mode buffers one additional hop (2048 samples, about 46.44 ms at
+44.1 kHz). `Encoder::lookahead_samples()` reports this added buffering; the
+CLI prints it. Decoded priming, duration and the bit budget are unchanged.
+The default remains Long: synthetic pre-echo improvement does not establish
+better overall music quality. Detector and block selection need listening
+and further tuning. `--test-codec-adaptive` checks stereo attacks, release,
+chunking, short/empty input, flush and a pre-echo/gain regression.

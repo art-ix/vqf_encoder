@@ -6,7 +6,8 @@ encoder objective. Native integrations using the default Config remain off.
 
 This first model estimates relative frequency masking. It does not implement
 an absolute hearing threshold, calibrated playback SPL, temporal masking,
-transient detection, or automatic short blocks. Its parameters are initial
+transient detection itself. `--block-mode adaptive` provides a separate
+experimental detector and block scheduler. The masking parameters are initial
 heuristics requiring listening-based tuning. Passing the regression tests
 establishes numerical/bitstream correctness, not better perceived quality.
 

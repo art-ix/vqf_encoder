@@ -111,6 +111,7 @@ bool window_transition_self_test(float* max_abs_err) {
         {0, 1, 2, 4, 7, 5, 6, 0},
         {0, 0, 8, 2, 3, 0, 0},
         {0, 0, 2, 3, 0, 0},
+        {0, 2, 3, 2, 3, 0, 2, 2, 3, 0},
     };
     int mode_count = 0;
     const auto* modes = legal_modes(mode_count);

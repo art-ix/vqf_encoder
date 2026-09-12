@@ -136,4 +136,90 @@ int test_codec(bool lsp_search = twinvq::Encoder::Config{}.lsp_search,
     std::cout << "codec regression tests passed\n";
     return 0;
 }
+
+int test_codec_adaptive() {
+    using Encoder = twinvq::Encoder;
+    for (int bitrate : {80, 96}) {
+        Encoder::Config cfg;
+        cfg.bitrate_kbps = bitrate;
+        cfg.block_mode = Encoder::BlockMode::Adaptive;
+        Encoder whole(cfg), chunked(cfg);
+        const int n = whole.frame_samples(), frames = 10 * n + 17;
+        if (whole.lookahead_samples() != n) throw std::runtime_error("incorrect adaptive lookahead");
+        std::vector<float> pcm(frames * 2);
+        for (int i = 0; i < frames; ++i) {
+            // A settled tone, then a side-only tonal attack, then quiet again.
+            const float tone = i < 3 * n ? 0.15f * std::sin(0.083f * i) : 0.0f;
+            const float burst = i >= 5 * n + n / 2 && i < 6 * n ?
+                0.3f * std::sin(1.713f * i) : 0.0f;
+            pcm[2 * i] = tone + burst;
+            pcm[2 * i + 1] = tone - burst;
+        }
+        whole.feed(pcm.data(), frames); whole.flush();
+        for (int pos = 0; pos < frames;) {
+            const int count = std::min(frames - pos, pos % (n + 7) + 1);
+            chunked.feed(pcm.data() + 2 * pos, count); pos += count;
+        }
+        chunked.flush(); chunked.flush();
+        if (whole.data() != chunked.data()) throw std::runtime_error("adaptive chunking mismatch");
+        if (whole.frames_written() != (frames + n - 1) / n + 2)
+            throw std::runtime_error("adaptive frame count changed");
+        const auto decoded = decode_test_file(whole);
+        if (decoded.size() != static_cast<size_t>((frames + n - 1) / n * n * 2))
+            throw std::runtime_error("adaptive tail truncated");
+        std::vector<int> windows;
+        for (int f = 0; f < whole.frames_written(); ++f) {
+            int w = 0;
+            for (int k = 0; k < twinvq::kWindowTypeBits; ++k) {
+                const size_t b = static_cast<size_t>(f) * whole.frame_bits() + k;
+                w = w * 2 + ((whole.data().at(b / 8) >> (7 - b % 8)) & 1);
+            }
+            const int previous = windows.empty() ? 0 : windows.back();
+            if ((w != 0 && w != 2 && w != 3) || (previous == 2 && w == 0) ||
+                (w == 3 && previous != 2)) throw std::runtime_error("illegal adaptive transition");
+            windows.push_back(w);
+        }
+        // Account for the one prepended hop: frames 6/7 straddle the attack
+        // in source hop 5. Settled/quiet regions must return to long windows.
+        if (windows.front() != 0 || windows[6] != 2 || windows[7] != 2 || windows[10] != 0)
+            throw std::runtime_error("adaptive detector missed attack or failed to release");
+        if (windows.back() == 2) throw std::runtime_error("adaptive overlap not closed");
+        if (bitrate == 96) {
+            auto control_cfg = cfg;
+            control_cfg.block_mode = Encoder::BlockMode::Long;
+            Encoder control(control_cfg);
+            control.feed(pcm.data(), frames); control.flush();
+            const auto long_pcm = decode_test_file(control);
+            const int onset = 5 * n + n / 2;
+            double adaptive_pre = 0, long_pre = 0, attack = 0, reference = 0;
+            for (int i = onset - 512; i < onset; ++i) for (int ch = 0; ch < 2; ++ch) {
+                adaptive_pre += static_cast<double>(decoded[2 * i + ch]) * decoded[2 * i + ch];
+                long_pre += static_cast<double>(long_pcm[2 * i + ch]) * long_pcm[2 * i + ch];
+            }
+            for (int i = onset; i < 6 * n; ++i) for (int ch = 0; ch < 2; ++ch) {
+                attack += static_cast<double>(decoded[2 * i + ch]) * decoded[2 * i + ch];
+                reference += static_cast<double>(pcm[2 * i + ch]) * pcm[2 * i + ch];
+            }
+            std::cout << "pre-attack energy ratio=" << adaptive_pre / long_pre
+                      << " attack energy ratio=" << attack / reference << "\n";
+            if (!(adaptive_pre < 0.8 * long_pre && attack > 0.5 * reference && attack < 1.5 * reference))
+                throw std::runtime_error("adaptive pre-echo/gain regression");
+        }
+        std::cout << "adaptive " << bitrate << " kbps: chunking, side attack, release and tail ok\n";
+    }
+    // Short input and empty input exercise draining the lookahead queue.
+    Encoder::Config cfg;
+    cfg.block_mode = Encoder::BlockMode::Adaptive;
+    cfg.lsp_search = cfg.bark_search = false;
+    for (int frames : {0, 17}) {
+        Encoder enc(cfg);
+        std::vector<float> pcm(frames * 2, 0.1f);
+        enc.feed(pcm.data(), frames); enc.flush();
+        const auto decoded = decode_test_file(enc);
+        if (decoded.size() != static_cast<size_t>(frames ? enc.frame_samples() * 2 : 0))
+            throw std::runtime_error("adaptive small input length mismatch");
+    }
+    std::cout << "adaptive codec tests passed\n";
+    return 0;
+}
 } // namespace

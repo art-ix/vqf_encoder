@@ -13,7 +13,7 @@ bool lpc_analysis_self_test(float* max_abs_err);
 
 class Encoder {
 public:
-    enum class BlockMode { Long, Short, Medium };
+    enum class BlockMode { Long, Short, Medium, Adaptive };
     struct Config {
         int sample_rate = 44100;
         int channels = 2;
@@ -31,7 +31,7 @@ public:
         int vq_beam = 0;
         // Experimental relative simultaneous-masking model; opt in for evaluation.
         bool psychoacoustic = false;
-        // Experimental fixed blocks for evaluation; no transient detector.
+        // Experimental fixed or transient-adaptive blocks; Long remains default.
         BlockMode block_mode = BlockMode::Long;
     };
 
@@ -42,6 +42,8 @@ public:
     int bitrate_kbps() const { return bitrate_kbps_; }
     int frame_samples() const { return mtab_->size; }
     int frame_bits() const { return frame_bits_; }
+    // Additional input buffering, not padding in the decoded audio.
+    int lookahead_samples() const { return cfg_.block_mode == BlockMode::Adaptive ? frame_samples() : 0; }
     const ModeTab* mode() const { return mtab_; }
 
     // Interleaved float PCM in [-1, 1]. May buffer internally.
@@ -62,7 +64,9 @@ private:
     enum class LspSearch { Basic, Angular, Spectral };
     void init_bitstream_params();
     void construct_perm_table(FrameType ftype);
-    void encode_frame(const float* interleaved_n, bool force_flush);
+    void submit_hop(const float* interleaved_n, bool final);
+    bool detect_attack(const float* interleaved_n);
+    void encode_frame(const float* interleaved_n, bool force_flush, bool next_short = false);
     void mdct_channel(int ch, const float* time_2n, float* spec_n);
     void fit_subblock_gains(int ch, const double* target, const double* weight);
     void analyze_lpc(const float* time_n, float* lpc, float* lsp);
@@ -107,6 +111,11 @@ private:
     std::vector<float> overlap_;      // channels * N previous samples (mid/side)
     std::vector<float> pcm_pending_;  // interleaved leftover input
     std::vector<float> analysis_window_;
+    std::vector<float> adaptive_pending_; // one interleaved hop of lookahead
+    bool adaptive_attack_ = false;
+    double attack_energy_[2]{};
+    double attack_high_energy_[2]{};
+    float attack_previous_[2]{};
     int lead_left_ = 0;
     bool flushed_ = false;
 

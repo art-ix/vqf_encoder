@@ -311,7 +311,7 @@ bool pick_encoder_mode(int sample_rate, int channels, int bitrate_kbps,
 Encoder::Encoder(const Config& cfg) : cfg_(cfg) {
     if (cfg.vq_beam != 0 && cfg.vq_beam != 4 && cfg.vq_beam != 8 && cfg.vq_beam != 16 && cfg.vq_beam != 32)
         throw std::invalid_argument("VQ beam must be auto (0), 4, 8, 16 or 32");
-    if (cfg.block_mode != BlockMode::Long && cfg.block_mode != BlockMode::Short && cfg.block_mode != BlockMode::Medium)
+    if (cfg.block_mode != BlockMode::Long && cfg.block_mode != BlockMode::Short && cfg.block_mode != BlockMode::Medium && cfg.block_mode != BlockMode::Adaptive)
         throw std::invalid_argument("invalid block mode");
     std::string err;
     int rate = cfg.sample_rate;
@@ -1187,14 +1187,21 @@ void Encoder::mdct_channel(int ch, const float* time_2n, float* spec_n) {
     (void)ch;
 }
 
-void Encoder::encode_frame(const float* interleaved_n, bool force_flush) {
+void Encoder::encode_frame(const float* interleaved_n, bool force_flush, bool next_short) {
     const int n = mtab_->size;
-    window_type_ = 0;
-    next_window_type_ = 0;
-    if (cfg_.block_mode != BlockMode::Long) {
-        const bool short_blocks = cfg_.block_mode == BlockMode::Short;
-        window_type_ = frames_written_ == 0 ? 0 : force_flush ? (short_blocks ? 3 : 5) : (short_blocks ? 2 : 8);
-        next_window_type_ = force_flush ? 0 : (short_blocks ? 2 : 8);
+    if (cfg_.block_mode == BlockMode::Adaptive) {
+        // This window was promised to the previous frame's analysis. Decide
+        // only the next one, using the buffered PCM attack decisions.
+        window_type_ = next_window_type_;
+        next_window_type_ = force_flush ? 0 : next_short ? 2 : window_type_ == 2 ? 3 : 0;
+    } else {
+        window_type_ = 0;
+        next_window_type_ = 0;
+        if (cfg_.block_mode != BlockMode::Long) {
+            const bool short_blocks = cfg_.block_mode == BlockMode::Short;
+            window_type_ = frames_written_ == 0 ? 0 : force_flush ? (short_blocks ? 3 : 5) : (short_blocks ? 2 : 8);
+            next_window_type_ = force_flush ? 0 : (short_blocks ? 2 : 8);
+        }
     }
     ftype_ = window_frame_type(window_type_);
     const int sub = mtab_->fmode[static_cast<int>(ftype_)].sub;
@@ -1590,6 +1597,56 @@ void Encoder::encode_frame(const float* interleaved_n, bool force_flush) {
     frames_written_++;
 }
 
+// Compare short-time energy with a 15 ms causal envelope. First differences
+// also catch bright attacks on a sustained bass. Analyze original L/R
+// independently so an attack cannot disappear in the mid/side conversion.
+// The absolute floor is numerical gating, not a calibrated hearing threshold.
+bool Encoder::detect_attack(const float* pcm) {
+    const int n = mtab_->size;
+    const int block = n / mtab_->fmode[static_cast<int>(FrameType::Short)].sub;
+    const double release = std::exp(-static_cast<double>(block) / (sample_rate_ * 0.015));
+    bool attack = false;
+    for (int start = 0; start < n; start += block) {
+        for (int ch = 0; ch < channels_; ++ch) {
+            double energy = 0, high = 0;
+            for (int i = start; i < start + block; ++i) {
+                const float x = pcm[i * channels_ + ch];
+                const double d = static_cast<double>(x) - attack_previous_[ch];
+                attack_previous_[ch] = x;
+                energy += static_cast<double>(x) * x;
+                high += d * d;
+            }
+            energy /= block;
+            high /= block;
+            attack |= energy > 8.0 * std::max(attack_energy_[ch], 1.0e-10)
+                   || high > 12.0 * std::max(attack_high_energy_[ch], 1.0e-10);
+            attack_energy_[ch] = release * attack_energy_[ch] + (1.0 - release) * energy;
+            attack_high_energy_[ch] = release * attack_high_energy_[ch] + (1.0 - release) * high;
+        }
+    }
+    return attack;
+}
+
+void Encoder::submit_hop(const float* pcm, bool final) {
+    if (cfg_.block_mode != BlockMode::Adaptive) {
+        encode_frame(pcm, final);
+        return;
+    }
+    const bool attack = final ? false : detect_attack(pcm);
+    if (!adaptive_pending_.empty()) {
+        // Cover the two overlapping frames around an attack. At EOF the
+        // buffered frame already covers the last attack; close its overlap.
+        encode_frame(adaptive_pending_.data(), false, !final && (adaptive_attack_ || attack));
+        adaptive_pending_.clear();
+    }
+    if (final) {
+        encode_frame(pcm, true);
+    } else {
+        adaptive_pending_.assign(pcm, pcm + static_cast<size_t>(mtab_->size) * channels_);
+        adaptive_attack_ = attack;
+    }
+}
+
 void Encoder::feed(const float* interleaved, int frames) {
     if (flushed_)
         throw std::runtime_error("encoder already flushed");
@@ -1602,7 +1659,7 @@ void Encoder::feed(const float* interleaved, int frames) {
     if (lead_left_ > 0) {
         std::vector<float> silence(need, 0.0f);
         while (lead_left_ > 0) {
-            encode_frame(silence.data(), false);
+            submit_hop(silence.data(), false);
             --lead_left_;
         }
     }
@@ -1613,14 +1670,14 @@ void Encoder::feed(const float* interleaved, int frames) {
         interleaved += take;
         remaining -= take;
         if (pcm_pending_.size() == need) {
-            encode_frame(pcm_pending_.data(), false);
+            submit_hop(pcm_pending_.data(), false);
             pcm_pending_.clear();
         }
     }
     // Process complete hops directly. Erasing the front of a whole-track
     // buffer on every hop used quadratic time and copied gigabytes of PCM.
     while (remaining >= need) {
-        encode_frame(interleaved, false);
+        submit_hop(interleaved, false);
         interleaved += need;
         remaining -= need;
     }
@@ -1634,12 +1691,12 @@ void Encoder::flush() {
     const int need = n * channels_;
     if (!pcm_pending_.empty()) {
         pcm_pending_.resize(static_cast<size_t>(need), 0.0f);
-        encode_frame(pcm_pending_.data(), false);
+        submit_hop(pcm_pending_.data(), false);
         pcm_pending_.clear();
     }
     // One extra hop so the last overlap is encoded.
     std::vector<float> z(static_cast<size_t>(need), 0.0f);
-    encode_frame(z.data(), true);
+    submit_hop(z.data(), true);
     flushed_ = true;
     // Pad DATA to whole bytes.
     const int bits = frames_written_ * frame_bits_;

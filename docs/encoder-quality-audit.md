@@ -48,22 +48,23 @@ passband, stopband, delay and boundary handling. Compare against an independent
 resampler using passband sweeps, above-Nyquist tones and impulses.
 The foobar2000 component uses the host resampler; this finding applies to CLI.
 
-### 2. Automatic transient block selection is missing
+### 2. Adaptive block selection needs quality tuning
 
 Location: twinvq/src/twinvq_encoder.cpp, encode_frame near 958,
 quantize_gain_bark near 757 and quantize_main near 828.
 The default path uses window type 0 and Long frames. Experimental fixed
-short/medium encoding is now available with `--block-mode`; see
+short/medium encoding and adaptive Long/Short selection are now available
+with `--block-mode`; see
 [implementation status](transient-block-implementation.md). At 44.1 kHz the hop is
 2048 samples (46.44 ms), and the analysis window spans 4096 (92.88 ms).
 This creates a structural risk of pre-echo and smeared attacks on percussion,
 plucked strings and abrupt starts. Actual audibility remains to be measured.
 
-Implement transient detection and lookahead, legal window transitions,
-short/medium MDCT analysis, per-subblock Bark/gain quantization and matching
-frame-type VQ. Decoder support exists, but setting the window bits alone is
-insufficient. Verify every supported transition with overlap-add/impulse tests
-and independent decoding before judging musical quality.
+The experimental path now includes transient detection, lookahead, window
+transitions, short/medium analysis, subblock Bark/gain and frame-type VQ.
+Continue tuning detection and block choices with temporal-error checks and
+listening. Passing overlap-add and decoder checks alone does not establish
+better musical quality.
 For stereo, transient decisions must consider both channels, including side.
 
 ### 3. PPC is a stub, not a pitch search
