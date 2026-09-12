@@ -98,6 +98,10 @@ int test_codec(bool lsp_search = twinvq::Encoder::Config{}.lsp_search,
                   << " ch: SNR=" << snr << " dB gain=" << gain << " dB\n";
         if (snr < 10 || std::fabs(gain) > 3)
             throw std::runtime_error("roundtrip quality/gain regression");
+        // This deterministic chirp previously scored about 27 dB with angular
+        // LSP search alone. Protect the spectral candidate's measured gain.
+        if (lsp_search && cfg.sample_rate == 16000 && channels == 1 && snr < 30)
+            throw std::runtime_error("spectral LSP quality regression");
         twinvq::Encoder silent(cfg);
         std::fill(pcm.begin(), pcm.end(), 0.0f);
         silent.feed(pcm.data(), frames); silent.flush();

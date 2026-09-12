@@ -51,12 +51,13 @@ public:
     std::vector<uint8_t> build_file() const;
 
 private:
+    enum class LspSearch { Basic, Angular, Spectral };
     void init_bitstream_params();
     void construct_perm_table(FrameType ftype);
     void encode_frame(const float* interleaved_n, bool force_flush);
     void mdct_channel(int ch, const float* time_2n, float* spec_n);
     void analyze_lpc(const float* time_n, float* lpc, float* lsp);
-    void quantize_lsp(int ch, const float* target_lsp, float* rec_out, bool search);
+    void quantize_lsp(int ch, const float* target_lsp, float* rec_out, LspSearch search);
     void quantize_gain_bark(int ch, const float* spec, int block_size,
                             const float* lpc_env, bool search);
     void quantize_ppc(int ch, float* spec);

@@ -413,3 +413,90 @@ by code inspection; it was not built locally on Linux.
 
 This enables the implemented searches, not future PPC/block-switching work.
 Known LSP regressions and additional encoding cost documented above still apply.
+
+
+## LSP quality update: spectral ranking and separate mid/side candidates
+
+Baseline: a1e114832a9afac7d6a71b61063fe00ab5834495 (all quality searches enabled).
+The default LSP search now nominates a second candidate using decoded LPC
+log-envelope shape, sampled at 128 frequencies. Mean log ratio is removed:
+overall level is handled by transmitted gain. Envelope values are bounded
+before taking logarithms. Angular ranking is retained as a separate candidate.
+Both ranks use the existing history-aware beam/split candidate generator and
+score actual decoded, rearranged LSPs. No codebook or bitstream format changes.
+
+In stereo the full-frame evaluator also tries angular/spectral and
+spectral/angular combinations for mid/side, instead of forcing both channels
+to share one rank. Basic/basic, angular/angular and spectral/spectral are also
+considered; each is combined with ordinary/searched Bark. There are at most ten
+stereo or six mono frame trials. Identical transmitted LSP parameters plus the
+same Bark strategy, from the same prior histories, skip repeated VQ evaluation.
+The selected frame's parameters and histories remain committed atomically.
+
+This improves candidate coverage, not the temporal scope of the objective.
+History can still affect subsequent frames, and waveform SNR after overlap-add
+is not identical to the modeled frame error. The initially tested joint-only
+spectral strategy regressed the 8 kHz stereo chirp by 2.1721 dB; mixed-channel
+candidates reduced this loss to 0.2662 dB. The remaining regression is real and
+is not hidden by the aggregate improvements below.
+
+Selected existing codec-test chirps, default configuration before/after:
+
+| Mode | Before SNR (dB) | After SNR (dB) | Delta (dB) |
+| --- | ---: | ---: | ---: |
+| 8000 Hz 8 kbps 1 ch | 27.9012 | 27.8296 | -0.0716 |
+| 8000 Hz 16 kbps 2 ch | 20.4234 | 20.1572 | -0.2662 |
+| 11025 Hz 8 kbps 1 ch | 22.0351 | 22.0351 | +0.0000 |
+| 11025 Hz 16 kbps 2 ch | 19.3232 | 19.5231 | +0.1999 |
+| 11025 Hz 10 kbps 1 ch | 30.9790 | 30.9790 | +0.0000 |
+| 11025 Hz 20 kbps 2 ch | 22.2860 | 22.2861 | +0.0001 |
+| 16000 Hz 16 kbps 1 ch | 27.2554 | 32.9184 | +5.6630 |
+| 16000 Hz 32 kbps 2 ch | 20.4214 | 20.4214 | +0.0000 |
+| 22050 Hz 20 kbps 1 ch | 23.4680 | 27.7555 | +4.2875 |
+| 22050 Hz 40 kbps 2 ch | 28.8417 | 28.8418 | +0.0001 |
+| 22050 Hz 24 kbps 1 ch | 27.3496 | 30.6722 | +3.3226 |
+| 22050 Hz 48 kbps 2 ch | 31.6901 | 31.6900 | -0.0001 |
+| 22050 Hz 32 kbps 1 ch | 26.5183 | 26.5808 | +0.0625 |
+| 22050 Hz 64 kbps 2 ch | 21.7089 | 21.7089 | +0.0000 |
+| 44100 Hz 40 kbps 1 ch | 19.0435 | 19.1510 | +0.1075 |
+| 44100 Hz 80 kbps 2 ch | 15.5471 | 15.5471 | +0.0000 |
+| 44100 Hz 48 kbps 1 ch | 18.6892 | 19.2042 | +0.5150 |
+| 44100 Hz 96 kbps 2 ch | 15.8503 | 15.8502 | -0.0001 |
+
+Independent FFmpeg decode, eight two-second 44.1 kHz stereo / 96 kbps sources:
+
+| Signal | Before SNR (dB) | After SNR (dB) | Delta (dB) | Time ratio |
+| --- | ---: | ---: | ---: | ---: |
+| tones | 16.99941 | 16.99941 | +0.00000 | 0.90x |
+| harmonics | 27.55330 | 27.55330 | +0.00000 | 1.03x |
+| attacks | 10.69880 | 10.74723 | +0.04844 | 1.14x |
+| noise | 4.61067 | 4.61104 | +0.00037 | 1.08x |
+| fade | 18.25891 | 18.25891 | -0.00000 | 1.25x |
+| identical | 21.61994 | 21.63592 | +0.01598 | 1.30x |
+| antiphase | 21.61994 | 21.63592 | +0.01598 | 1.23x |
+| left-only | 19.61116 | 20.10004 | +0.48889 | 1.89x |
+
+The fade is effectively unchanged (difference about -1e-8 dB). Tiny deltas do
+not establish audibility. These are waveform diagnostics, not music listening
+results. All files remain 25686 bytes and 90112 decoded frames; the known
+FFmpeg end-of-file demux diagnostic persists. Timings are single runs with
+other validation running concurrently, so they are indicative only, not a
+controlled speed benchmark. The worst observed ratio in this small set is
+about 1.89x, while several clips are near the previous runtime.
+
+All 18 modes passed the default, LSP-only, Bark-only and basic codec suites,
+including history flags, chunked feed, silence and duration. A targeted gate
+now requires the 16 kHz mono chirp to exceed 30 dB when LSP search is enabled
+(observed 32.9184 dB with Bark, 32.3319 dB without), protecting the spectral
+candidate's gain against the former approximately 27 dB result.
+
+Reproduce with separately built executables:
+
+```sh
+python3 tools/benchmark_gain.py /path/to/a1e1148/vqf_encode bin/vqf_encode obj/lsp-quality-comparison
+```
+
+LSP and Bark remain enabled by default as requested. `--no-lsp-search` bypasses
+both angular and spectral search; `--no-bark-search` remains independent.
+Future work should consider lookahead or temporal reconstruction when choosing
+LSP histories, rather than promising non-regression from single-frame scoring.

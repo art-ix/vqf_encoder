@@ -684,7 +684,7 @@ void Encoder::analyze_lpc(const float* time_2n, float* lpc, float* lsp) {
     lpc_to_lsp(lpc, order, lsp);
 }
 
-void Encoder::quantize_lsp(int ch, const float* target_lsp, float* rec_out, bool search) {
+void Encoder::quantize_lsp(int ch, const float* target_lsp, float* rec_out, LspSearch search) {
     const int order = mtab_->n_lsp;
     const float* cb = mtab_->lspcodebook;
     const float* cb2 = cb + (1 << mtab_->lsp_bit1) * order;
@@ -733,6 +733,34 @@ void Encoder::quantize_lsp(int ch, const float* target_lsp, float* rec_out, bool
         j0 = chunk_end;
     }
 
+    // A separate spectral candidate scores the decoded LPC envelope shape.
+    // Remove the mean log ratio because transmitted gain handles overall level.
+    // Keep angular search as another full-frame candidate rather than assuming
+    // that a smaller envelope distance guarantees better quantized audio.
+    constexpr int spectral_bins = 128;
+    float target_log[spectral_bins]{}, grid[spectral_bins]{};
+    if (search == LspSearch::Spectral) {
+        float lsp_cos[kLspCoefsMax];
+        for (int j = 0; j < order; ++j) lsp_cos[j] = 2.0f * std::cos(target_lsp[j]);
+        for (int k = 0; k < spectral_bins; ++k) {
+            grid[k] = std::cos(kPi * (k + 0.5f) / spectral_bins);
+            target_log[k] = std::log(std::clamp(
+                eval_lpc_spectrum(lsp_cos, grid[k], order), 1.0e-20f, 1.0e20f));
+        }
+    }
+    auto lsp_error = [&](const float* rec) {
+        if (search != LspSearch::Spectral) return vec_err(target_lsp, rec, order);
+        float lsp_cos[kLspCoefsMax];
+        for (int j = 0; j < order; ++j) lsp_cos[j] = 2.0f * std::cos(rec[j]);
+        double sum = 0, squares = 0;
+        for (int k = 0; k < spectral_bins; ++k) {
+            const double d = std::log(std::clamp(
+                eval_lpc_spectrum(lsp_cos, grid[k], order), 1.0e-20f, 1.0e20f)) - target_log[k];
+            sum += d; squares += d*d;
+        }
+        return static_cast<float>(std::max(0.0, squares - sum*sum/spectral_bins));
+    };
+
     // History index: try both (lsp_bit0 is 1 → 2 entries) without committing hist.
     float saved_hist[20];
     std::memcpy(saved_hist, lsp_hist_[ch], sizeof(float) * static_cast<size_t>(order));
@@ -742,7 +770,7 @@ void Encoder::quantize_lsp(int ch, const float* target_lsp, float* rec_out, bool
         std::memcpy(lsp_hist_[ch], saved_hist, sizeof(float) * static_cast<size_t>(order));
         float rec[kLspCoefsMax];
         decode_lsp(lpc_idx1_[ch], lpc_idx2_[ch], h, rec, lsp_hist_[ch]);
-        const float e = vec_err(target_lsp, rec, order);
+        const float e = lsp_error(rec);
         if (e < best_e) {
             best_e = e;
             best0 = h;
@@ -755,7 +783,7 @@ void Encoder::quantize_lsp(int ch, const float* target_lsp, float* rec_out, bool
     std::memcpy(selected2, lpc_idx2_[ch], sizeof(selected2));
     const float* predictor = cb2 + n2 * order;
     constexpr int beam = 8;
-    for (int h = 0; search && h < n0; ++h) {
+    for (int h = 0; search != LspSearch::Basic && h < n0; ++h) {
         float errors[beam];
         int indices[beam]{};
         std::fill_n(errors, beam, std::numeric_limits<float>::infinity());
@@ -799,7 +827,7 @@ void Encoder::quantize_lsp(int ch, const float* target_lsp, float* rec_out, bool
             float history[kLspCoefsMax], rec[kLspCoefsMax];
             std::memcpy(history, saved_hist, sizeof(float) * order);
             decode_lsp(indices[slot], split, h, rec, history);
-            const float error = vec_err(target_lsp, rec, order);
+            const float error = lsp_error(rec);
             if (error < best_e) {
                 best_e = error; best0 = h; selected1 = indices[slot];
                 std::memcpy(selected2, split, sizeof(selected2));
@@ -1100,14 +1128,30 @@ void Encoder::encode_frame(const float* interleaved_n, bool /*force_flush*/) {
     };
     const auto prior_lsp = snapshot(lsp_hist_);
     const auto prior_bark = snapshot(bark_hist_);
-    auto trial = [&](bool lsp_search, bool bark_search) {
+    using TrialKey = std::array<uint8_t, 1 + kChannelsMax * (2 + kLspSplitMax)>;
+    std::vector<TrialKey> evaluated;
+    auto trial = [&](const std::array<LspSearch, 2>& strategy, bool bark_search) {
         restore(lsp_hist_, prior_lsp);
         restore(bark_hist_, prior_bark);
         spec = original_spec;
         std::vector<float> rec_lsps(target_lsps.size());
         for (int ch = 0; ch < channels_; ++ch)
             quantize_lsp(ch, target_lsps.data() + ch * kLspCoefsMax,
-                         rec_lsps.data() + ch * kLspCoefsMax, lsp_search);
+                         rec_lsps.data() + ch * kLspCoefsMax, strategy[ch]);
+        // Identical transmitted LSP parameters from identical prior histories
+        // lead to the same reconstruction. Avoid repeating expensive VQ work.
+        TrialKey key{};
+        key[0] = static_cast<uint8_t>(bark_search);
+        for (int ch = 0; ch < channels_; ++ch) {
+            const int offset = 1 + ch * (2 + kLspSplitMax);
+            key[offset] = lpc_idx1_[ch];
+            key[offset + 1] = lpc_hist_idx_[ch];
+            for (int i = 0; i < mtab_->lsp_split; ++i)
+                key[offset + 2 + i] = lpc_idx2_[ch][i];
+        }
+        if (std::find(evaluated.begin(), evaluated.end(), key) != evaluated.end())
+            return std::numeric_limits<double>::infinity();
+        evaluated.push_back(key);
 
         std::vector<float> residual(static_cast<size_t>(channels_) * n);
         std::vector<float> weights(residual.size());
@@ -1268,7 +1312,7 @@ void Encoder::encode_frame(const float* interleaved_n, bool /*force_flush*/) {
         return best_error;
     };
 
-    double selected_error = trial(false, false);
+    double selected_error = trial({LspSearch::Basic, LspSearch::Basic}, false);
     if (!cfg_.lsp_search && !cfg_.bark_search) {
         write_frame_bits();
         frames_written_++;
@@ -1283,10 +1327,20 @@ void Encoder::encode_frame(const float* interleaved_n, bool /*force_flush*/) {
     auto selected_lpc_hist = snapshot(lpc_hist_idx_);
     auto selected_lsp_state = snapshot(lsp_hist_);
     auto selected_bark_state = snapshot(bark_hist_);
-    for (int lsp = 0; lsp <= static_cast<int>(cfg_.lsp_search); ++lsp) {
+    // Mid and side can favor different envelopes. Include mixed angular/
+    // spectral choices instead of forcing both channels to use one ranking.
+    const std::array<LspSearch, 2> strategies[] = {
+        {LspSearch::Basic, LspSearch::Basic},
+        {LspSearch::Angular, LspSearch::Angular},
+        {LspSearch::Spectral, LspSearch::Spectral},
+        {LspSearch::Spectral, LspSearch::Angular},
+        {LspSearch::Angular, LspSearch::Spectral},
+    };
+    const int strategy_count = cfg_.lsp_search ? (channels_ == 2 ? 5 : 3) : 1;
+    for (int index = 0; index < strategy_count; ++index) {
         for (int bark = 0; bark <= static_cast<int>(cfg_.bark_search); ++bark) {
-            if (!lsp && !bark) continue;
-            const double error = trial(lsp != 0, bark != 0);
+            if (index == 0 && !bark) continue;
+            const double error = trial(strategies[index], bark != 0);
             if (!(error < selected_error)) continue;
             selected_error = error;
             selected_main = snapshot(main_coeffs_);
