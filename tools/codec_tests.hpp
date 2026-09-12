@@ -28,7 +28,7 @@ std::vector<float> decode_test_file(const twinvq::Encoder& enc) {
     return result;
 }
 
-int test_codec() {
+int test_codec(bool lsp_search = false) {
     int mode_count = 0;
     const auto* modes = twinvq::legal_modes(mode_count);
     for (int m = 0; m < mode_count; ++m) for (int channels = 1; channels <= 2; ++channels) {
@@ -36,6 +36,7 @@ int test_codec() {
         cfg.sample_rate = modes[m].sample_rate;
         cfg.bitrate_kbps = modes[m].kbps_per_channel * channels;
         cfg.channels = channels;
+        cfg.lsp_search = lsp_search;
         twinvq::Encoder whole(cfg), chunked(cfg);
         const int hop = whole.frame_samples(), frames = 7 * hop + 17;
         std::vector<float> pcm(frames * channels);

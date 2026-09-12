@@ -248,3 +248,74 @@ The script requires Python and FFmpeg only for measurement; neither is linked
 into the encoder. It checks finite decoded output, unchanged encoded size and
 decoded duration, and writes its generated clips/results under obj by default.
 LSP/Bark search, transient block switching and PPC remain subsequent work.
+
+
+## Implementation update: optional frame-scored LSP search
+
+Baseline: 49f95857faae111c13e6ab62ad43db6f91374353.
+This implementation is **opt-in**, via CLI `--lsp-search` or C++
+`Encoder::Config::lsp_search`. Default configuration retains the baseline
+algorithm, including gain/VQ refinement. The foobar2000 component does not
+expose the option yet.
+
+For each history index, the search keeps eight first-stage LSP candidates,
+fits split residuals with the decoder's history prediction weights, then scores
+actual decoded LSPs including rearrangement/sorting. The original LSP candidate
+is included. Trial decoding uses separate history snapshots.
+
+Choosing solely by LSP coefficient error caused regressions: the synthetic
+fade score dropped 0.655 dB, and some mono codec tests worsened. The implemented
+option therefore compares two complete frame quantizations: ordinary LSP and
+searched LSP, with their respective LPC envelope, Bark, gain and main VQ.
+The lower synthesis-weighted MDCT error wins. Gain/VQ refinement is identical
+in both trials. Frame parameters AND the winning LSP/Bark histories are restored
+before writing exactly one frame. Input overlap advances once, and the growing
+output file and pending PCM are not copied between trials.
+
+This is a local decision from a shared starting history, not a guarantee that
+an entire track matches or beats a separately running baseline. Chosen history
+changes future frames, and the modeled frame objective differs from cropped
+PCM SNR after overlap-add. Remaining regressions and extra encode cost are why
+the feature is not the default.
+
+Synthetic 44.1 kHz stereo / 96 kbps results, independently decoded by FFmpeg:
+
+| Signal | Baseline SNR (dB) | Search SNR (dB) | Delta (dB) | Time ratio |
+| --- | ---: | ---: | ---: | ---: |
+| tones | 14.470 | 15.022 | +0.552 | 1.91x |
+| harmonics | 27.365 | 27.495 | +0.129 | 2.02x |
+| attacks | 10.494 | 10.699 | +0.205 | 1.94x |
+| noise | 4.601 | 4.609 | +0.008 | 1.89x |
+| fade | 17.859 | 17.600 | -0.259 | 1.90x |
+| identical | 17.729 | 21.620 | +3.891 | 1.93x |
+| antiphase | 17.729 | 21.620 | +3.891 | 1.93x |
+| left-only | 17.536 | 19.611 | +2.075 | 1.87x |
+
+The existing codec chirp at 44.1 kHz stereo / 96 kbps rose from 13.659 to
+14.8223 dB. However, the 11.025 kHz stereo / 20 kbps chirp fell from 22.947 to
+22.153 dB. These results do not establish perceived music quality. Encoding
+costs approximately 1.9–2.0 times the baseline in these single-run timings.
+Encoded sizes and decoded durations remain identical in all eight clips;
+FFmpeg still emits the known end-of-file demux warning in both versions.
+
+Validation:
+
+- Linux build and explicit MDCT/LPC, resampler, default codec, enabled codec,
+  roundtrip and WAV input-format tests passed.
+- The new `--test-codec-lsp` command runs all 18 mono/stereo combinations with
+  the option enabled, including history-sensitive irregular feed chunking,
+  repeated flush, duration, gain, finite output and silence checks.
+- All eight benchmark clips were re-encoded after introducing the option:
+  default output matches the baseline byte-for-byte, and enabled output matches
+  the measured search candidate byte-for-byte.
+
+Reproduce comparison with:
+
+```sh
+python3 tools/benchmark_gain.py /path/to/baseline/vqf_encode bin/vqf_encode obj/lsp-comparison --lsp-search
+```
+
+Further work should score temporal reconstruction/history consequences before
+promoting the option to default. Bark history search, block switching and PPC
+are still pending; this change evaluates existing Bark quantization as part of
+LSP selection but does not add new Bark candidates.

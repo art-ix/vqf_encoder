@@ -43,6 +43,7 @@ test: all
 	./bin/vqf_encode --test-resample
 	./bin/vqf_encode --test-mdct
 	./bin/vqf_encode --test-codec
+	./bin/vqf_encode --test-codec-lsp
 	./bin/vqf_encode --test-roundtrip 0.5
 
 clean:

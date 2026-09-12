@@ -21,6 +21,8 @@ public:
         std::string version = "97012000";
         // Prepend one hop; MDCT overlap supplies the other decoder priming hop.
         bool compensate_delay = true;
+        // Experimental frame-scored LSP beam search; increases encode time.
+        bool lsp_search = false;
     };
 
     explicit Encoder(const Config& cfg);
@@ -52,7 +54,7 @@ private:
     void encode_frame(const float* interleaved_n, bool force_flush);
     void mdct_channel(int ch, const float* time_2n, float* spec_n);
     void analyze_lpc(const float* time_n, float* lpc, float* lsp);
-    void quantize_lsp(int ch, const float* target_lsp, float* rec_out);
+    void quantize_lsp(int ch, const float* target_lsp, float* rec_out, bool search);
     void quantize_gain_bark(int ch, const float* spec, int block_size);
     void quantize_ppc(int ch, float* spec);
     void quantize_main(const float* residual, const float* weights);

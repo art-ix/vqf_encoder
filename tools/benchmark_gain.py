@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Compare two encoder executables on deterministic synthetic 44.1 kHz audio.
-Requires ffmpeg on PATH. Usage: benchmark_gain.py baseline candidate [output-dir]
+Requires ffmpeg on PATH. Usage: benchmark_gain.py baseline candidate [output-dir] [candidate-options...]
 Waveform SNR is diagnostic, not a perceptual score. Generated files are temporary.
 """
 import json
@@ -48,7 +48,7 @@ for name in ("tones", "harmonics", "attacks", "noise", "fade", "identical", "ant
         encoded = root / (name+"-"+label+".vqf")
         decoded = encoded.with_suffix(".f32")
         start = time.perf_counter()
-        subprocess.run([exe, str(source), str(encoded)], check=True, capture_output=True)
+        subprocess.run([exe, *(sys.argv[4:] if label == "after" else []), str(source), str(encoded)], check=True, capture_output=True)
         elapsed = time.perf_counter()-start
         run = subprocess.run(["ffmpeg","-v","error","-y","-i",str(encoded),"-f","f32le",str(decoded)],
                              check=True, capture_output=True, text=True)

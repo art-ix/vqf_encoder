@@ -192,3 +192,14 @@ The foobar2000 SDK (not included) is copyright Peter Pawlowski and is licensed s
 Codebook tables are numerical TwinVQ constants required to encode the format.
 
 Known NTT TwinVQ patent families expired around 2015–2020. That is not legal advice.
+
+
+### Experimental LSP search
+
+`vqf_encode --lsp-search -b 96 input.wav output.vqf` enables prediction-aware
+LSP beam search, comparing the ordinary and searched candidates after full
+frame quantization. It is disabled by default because some test signals regress
+and encoding takes approximately twice as long. In the C++ API set
+`Encoder::Config::lsp_search = true`. The foobar2000 component keeps the default.
+Run `vqf_encode --test-codec-lsp` to check all 18 modes with this option.
+See [the audit](docs/encoder-quality-audit.md) for measured gains and regressions.

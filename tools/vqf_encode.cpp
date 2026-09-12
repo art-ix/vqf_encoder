@@ -107,12 +107,14 @@ void usage() {
               << "       vqf_encode --list-modes\n"
               << "       vqf_encode --test-mdct\n"
               << "       vqf_encode --test-codec\n"
+              << "       vqf_encode --test-codec-lsp\n"
               << "       vqf_encode --test-resample\n"
               << "       vqf_encode --test-roundtrip [seconds]\n"
               << "\noptions:\n"
               << "  -b, --bitrate KBPS   total bitrate; snaps to a legal TwinVQ mode\n"
               << "                       (44.1 kHz stereo max is 96 = 48 kbps/ch; there is no 128)\n"
               << "  --title/--artist/--album/--year/--track/--genre/--comment TEXT\n"
+              << "  --lsp-search        experimental frame-scored LSP search (slower)\n"
               << "  --no-delay           do not prepend priming frames\n"
               << "\nfoobar2000 Converter:\n"
               << "  Encoder     vqf_encode.exe\n"
@@ -239,6 +241,8 @@ int test_roundtrip(double seconds) {
 int main(int argc, char** argv) try {
     if (argc >= 2 && std::string(argv[1]) == "--test-resample")
         return test_resample();
+    if (argc >= 2 && std::string(argv[1]) == "--test-codec-lsp")
+        return test_codec(true);
     if (argc >= 2 && std::string(argv[1]) == "--test-codec")
         return test_codec();
     if (argc >= 2 && std::string(argv[1]) == "--list-modes") {
@@ -294,6 +298,8 @@ int main(int argc, char** argv) try {
             cfg.tags.genre = need("--genre");
         } else if (a == "--comment") {
             cfg.tags.comment = need("--comment");
+        } else if (a == "--lsp-search") {
+            cfg.lsp_search = true;
         } else if (a == "--no-delay") {
             cfg.compensate_delay = false;
         } else if (a[0] == '-') {

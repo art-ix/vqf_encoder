@@ -5,6 +5,7 @@
 #include "twinvq_tables.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -683,7 +684,7 @@ void Encoder::analyze_lpc(const float* time_2n, float* lpc, float* lsp) {
     lpc_to_lsp(lpc, order, lsp);
 }
 
-void Encoder::quantize_lsp(int ch, const float* target_lsp, float* rec_out) {
+void Encoder::quantize_lsp(int ch, const float* target_lsp, float* rec_out, bool search) {
     const int order = mtab_->n_lsp;
     const float* cb = mtab_->lspcodebook;
     const float* cb2 = cb + (1 << mtab_->lsp_bit1) * order;
@@ -747,6 +748,66 @@ void Encoder::quantize_lsp(int ch, const float* target_lsp, float* rec_out) {
             best0 = h;
         }
     }
+    // Keep the legacy candidate, then search prediction-aware first-stage
+    // alternatives. History is private to each trial and committed only once.
+    int selected1 = lpc_idx1_[ch];
+    uint8_t selected2[kLspSplitMax];
+    std::memcpy(selected2, lpc_idx2_[ch], sizeof(selected2));
+    const float* predictor = cb2 + n2 * order;
+    constexpr int beam = 8;
+    for (int h = 0; search && h < n0; ++h) {
+        float errors[beam];
+        int indices[beam]{};
+        std::fill_n(errors, beam, std::numeric_limits<float>::infinity());
+        for (int i = 0; i < n1; ++i) {
+            float error = 0;
+            for (int j = 0; j < order; ++j) {
+                const float history_weight = predictor[h * order + j];
+                const float value = (1.0f - history_weight) * cb[i * order + j]
+                                  + history_weight * saved_hist[j];
+                const float d = target_lsp[j] - value;
+                error += d * d;
+            }
+            for (int slot = 0; slot < beam; ++slot) {
+                if (error >= errors[slot]) continue;
+                for (int k = beam - 1; k > slot; --k) {
+                    errors[k] = errors[k-1]; indices[k] = indices[k-1];
+                }
+                errors[slot] = error; indices[slot] = i;
+                break;
+            }
+        }
+        for (int slot = 0; slot < std::min(beam, n1); ++slot) {
+            uint8_t split[kLspSplitMax]{};
+            int begin = 0;
+            for (int part = 0; part < mtab_->lsp_split; ++part) {
+                const int end = ((part + 1) * order + funny[part]) / mtab_->lsp_split;
+                float error = std::numeric_limits<float>::infinity();
+                for (int i = 0; i < n2; ++i) {
+                    float trial = 0;
+                    for (int j = begin; j < end; ++j) {
+                        const float hw = predictor[h * order + j];
+                        const float value = (1.0f - hw) *
+                            (cb[indices[slot] * order + j] + cb2[i * order + j]) + hw * saved_hist[j];
+                        const float d = target_lsp[j] - value;
+                        trial += d*d;
+                    }
+                    if (trial < error) { error = trial; split[part] = static_cast<uint8_t>(i); }
+                }
+                begin = end;
+            }
+            float history[kLspCoefsMax], rec[kLspCoefsMax];
+            std::memcpy(history, saved_hist, sizeof(float) * order);
+            decode_lsp(indices[slot], split, h, rec, history);
+            const float error = vec_err(target_lsp, rec, order);
+            if (error < best_e) {
+                best_e = error; best0 = h; selected1 = indices[slot];
+                std::memcpy(selected2, split, sizeof(selected2));
+            }
+        }
+    }
+    lpc_idx1_[ch] = static_cast<uint8_t>(selected1);
+    std::memcpy(lpc_idx2_[ch], selected2, sizeof(selected2));
     lpc_hist_idx_[ch] = static_cast<uint8_t>(best0);
     std::memcpy(lsp_hist_[ch], saved_hist, sizeof(float) * static_cast<size_t>(order));
     float rec[kLspCoefsMax];
@@ -980,7 +1041,7 @@ void Encoder::encode_frame(const float* interleaved_n, bool /*force_flush*/) {
 
     std::vector<float> spec(static_cast<size_t>(channels_) * n, 0.0f);
     std::vector<float> time2n(static_cast<size_t>(n) * 2);
-    std::vector<float> rec_lsps(static_cast<size_t>(channels_) * kLspCoefsMax, 0.0f);
+    std::vector<float> target_lsps(static_cast<size_t>(channels_) * kLspCoefsMax, 0.0f);
 
     for (int ch = 0; ch < channels_; ch++) {
         const float* prev = overlap_.data() + ch * n;
@@ -994,169 +1055,219 @@ void Encoder::encode_frame(const float* interleaved_n, bool /*force_flush*/) {
 
         float lpc[kLspCoefsMax + 1];
         float lsp[kLspCoefsMax];
-        float rec_lsp[kLspCoefsMax];
         analyze_lpc(time2n.data(), lpc, lsp);
-        quantize_lsp(ch, lsp, rec_lsp);
-        std::memcpy(rec_lsps.data() + static_cast<size_t>(ch) * kLspCoefsMax, rec_lsp,
+        std::memcpy(target_lsps.data() + static_cast<size_t>(ch) * kLspCoefsMax, lsp,
                     sizeof(float) * static_cast<size_t>(mtab_->n_lsp));
     }
 
-    std::vector<float> residual(static_cast<size_t>(channels_) * n);
-    std::vector<float> weights(residual.size());
+    const auto original_spec = spec;
+    // Trial encodes share input and prior histories. Snapshot only frame state,
+    // never the growing output byte vector or pending track PCM.
+    auto snapshot = [](const auto& value) {
+        std::array<unsigned char, sizeof(value)> copy;
+        std::memcpy(copy.data(), &value, sizeof(value));
+        return copy;
+    };
+    auto restore = [](auto& value, const auto& copy) {
+        std::memcpy(&value, copy.data(), sizeof(value));
+    };
+    const auto prior_lsp = snapshot(lsp_hist_);
+    const auto prior_bark = snapshot(bark_hist_);
+    auto trial = [&](bool search) {
+        restore(lsp_hist_, prior_lsp);
+        restore(bark_hist_, prior_bark);
+        spec = original_spec;
+        std::vector<float> rec_lsps(target_lsps.size());
+        for (int ch = 0; ch < channels_; ++ch)
+            quantize_lsp(ch, target_lsps.data() + ch * kLspCoefsMax,
+                         rec_lsps.data() + ch * kLspCoefsMax, search);
 
-    for (int ch = 0; ch < channels_; ch++) {
-        float* sp = spec.data() + ch * n;
-        std::vector<float> env(static_cast<size_t>(n), 1.0f);
-        float lsp_cos[kLspCoefsMax];
-        std::memcpy(lsp_cos, rec_lsps.data() + static_cast<size_t>(ch) * kLspCoefsMax,
-                    sizeof(float) * static_cast<size_t>(mtab_->n_lsp));
-        dec_lpc_spectrum_inv(lsp_cos, FrameType::Long, env.data());
-        for (int i = 0; i < n; i++) {
-            const float e = std::max(env[static_cast<size_t>(i)], 1.0e-6f);
-            sp[i] /= e;
-        }
+        std::vector<float> residual(static_cast<size_t>(channels_) * n);
+        std::vector<float> weights(residual.size());
 
-        quantize_ppc(ch, sp);
+        for (int ch = 0; ch < channels_; ch++) {
+            float* sp = spec.data() + ch * n;
+            std::vector<float> env(static_cast<size_t>(n), 1.0f);
+            float lsp_cos[kLspCoefsMax];
+            std::memcpy(lsp_cos, rec_lsps.data() + static_cast<size_t>(ch) * kLspCoefsMax,
+                        sizeof(float) * static_cast<size_t>(mtab_->n_lsp));
+            dec_lpc_spectrum_inv(lsp_cos, FrameType::Long, env.data());
+            for (int i = 0; i < n; i++) {
+                const float e = std::max(env[static_cast<size_t>(i)], 1.0e-6f);
+                sp[i] /= e;
+            }
 
-        const int cb_len_p = (n_div_[3] + mtab_->ppc_shape_len * channels_ - 1) / n_div_[3];
-        std::vector<float> ppc_shape(static_cast<size_t>(mtab_->ppc_shape_len) * channels_, 0.0f);
-        dequant(ppc_coeffs_, ppc_shape.data(), FrameType::Ppc, mtab_->ppc_shape_cb,
-                mtab_->ppc_shape_cb + cb_len_p * kPpcShapeCbSize, cb_len_p);
-        std::vector<float> ppc_add(static_cast<size_t>(n), 0.0f);
-        decode_ppc(p_coef_[ch], g_coef_[ch], ppc_shape.data() + ch * mtab_->ppc_shape_len, ppc_add.data());
-        for (int i = 0; i < n; i++)
-            sp[i] -= ppc_add[static_cast<size_t>(i)];
+            quantize_ppc(ch, sp);
 
-        quantize_gain_bark(ch, sp, n);
+            const int cb_len_p = (n_div_[3] + mtab_->ppc_shape_len * channels_ - 1) / n_div_[3];
+            std::vector<float> ppc_shape(static_cast<size_t>(mtab_->ppc_shape_len) * channels_, 0.0f);
+            dequant(ppc_coeffs_, ppc_shape.data(), FrameType::Ppc, mtab_->ppc_shape_cb,
+                    mtab_->ppc_shape_cb + cb_len_p * kPpcShapeCbSize, cb_len_p);
+            std::vector<float> ppc_add(static_cast<size_t>(n), 0.0f);
+            decode_ppc(p_coef_[ch], g_coef_[ch], ppc_shape.data() + ch * mtab_->ppc_shape_len, ppc_add.data());
+            for (int i = 0; i < n; i++)
+                sp[i] -= ppc_add[static_cast<size_t>(i)];
 
-        float gain[kChannelsMax * kSubblocksMax];
-        dec_gain(FrameType::Long, gain);
-        std::vector<float> bark(static_cast<size_t>(n), 1.0f);
-        dec_bark_env(bark1_[ch][0], bark_use_hist_[ch][0], ch, bark.data(), gain[ch], FrameType::Long);
-        float* resid = residual.data() + ch * n;
-        for (int i = 0; i < n; i++) {
-            const float b = bark[static_cast<size_t>(i)];
-            resid[i] = (std::fabs(b) > 1.0e-8f) ? sp[i] / b : sp[i];
-            const float synthesis_scale = env[i] * b;
-            weights[ch * n + i] = synthesis_scale * synthesis_scale;
-        }
-    }
+            quantize_gain_bark(ch, sp, n);
 
-    // All candidates are scored against the same target and synthesis envelope.
-    // Keep the previous two-search encoder result among the candidates: a fresh
-    // approximate VQ search is not guaranteed to improve on its predecessor.
-    const auto target = residual;
-    const auto synthesis_weights = weights;
-    float base_gain[kChannelsMax * kSubblocksMax];
-    dec_gain(FrameType::Long, base_gain);
-    uint8_t best_coeffs[sizeof(main_coeffs_)]{};
-    uint8_t best_gains[sizeof(gain_bits_)]{};
-    double best_error = std::numeric_limits<double>::infinity();
-    const auto& main_mode = mtab_->fmode[static_cast<int>(FrameType::Long)];
-    std::vector<float> candidate(target.size());
-    auto retain_candidate = [&]() {
-        dequant(main_coeffs_, candidate.data(), FrameType::Long,
-                main_mode.cb0, main_mode.cb1, main_mode.cb_len_read);
-        float gains[kChannelsMax * kSubblocksMax];
-        dec_gain(FrameType::Long, gains);
-        double error = 0;
-        for (int ch = 0; ch < channels_; ++ch) {
-            const double ratio = static_cast<double>(gains[ch]) / base_gain[ch];
-            for (int i = ch * n; i < (ch + 1) * n; ++i) {
-                const double d = target[i] - ratio * candidate[i];
-                error += synthesis_weights[i] * d * d;
+            float gain[kChannelsMax * kSubblocksMax];
+            dec_gain(FrameType::Long, gain);
+            std::vector<float> bark(static_cast<size_t>(n), 1.0f);
+            dec_bark_env(bark1_[ch][0], bark_use_hist_[ch][0], ch, bark.data(), gain[ch], FrameType::Long);
+            float* resid = residual.data() + ch * n;
+            for (int i = 0; i < n; i++) {
+                const float b = bark[static_cast<size_t>(i)];
+                resid[i] = (std::fabs(b) > 1.0e-8f) ? sp[i] / b : sp[i];
+                const float synthesis_scale = env[i] * b;
+                weights[ch * n + i] = synthesis_scale * synthesis_scale;
             }
         }
-        if (error < best_error) {
-            best_error = error;
-            std::memcpy(best_coeffs, main_coeffs_, sizeof(main_coeffs_));
-            std::memcpy(best_gains, gain_bits_, sizeof(gain_bits_));
-        }
-    };
-    auto restore_best = [&]() {
-        std::memcpy(main_coeffs_, best_coeffs, sizeof(main_coeffs_));
-        std::memcpy(gain_bits_, best_gains, sizeof(gain_bits_));
-    };
 
-    quantize_main(residual.data(), weights.data());
-    retain_candidate();
-    // Fit the transmitted channel gain to the actual selected vectors.
-    // A nominal codebook RMS alone cannot predict the energy of their sum.
-    std::vector<float> reconstructed(residual.size());
-    const auto& mode = mtab_->fmode[static_cast<int>(FrameType::Long)];
-    dequant(main_coeffs_, reconstructed.data(), FrameType::Long, mode.cb0, mode.cb1, mode.cb_len_read);
-    float old_gain[kChannelsMax * kSubblocksMax];
-    dec_gain(FrameType::Long, old_gain);
-    for (int ch = 0; ch < channels_; ++ch) {
-        double cross = 0, energy = 0;
-        for (int i = ch * n; i < (ch + 1) * n; ++i) {
-            cross += static_cast<double>(weights[i]) * residual[i] * reconstructed[i];
-            energy += static_cast<double>(weights[i]) * reconstructed[i] * reconstructed[i];
-        }
-        const float factor = energy > 1.0e-20 ? static_cast<float>(std::max(0.0, cross / energy)) : 1.0f;
-        gain_bits_[ch] = static_cast<uint8_t>(quantize_mu(old_gain[ch] * factor * 8192.0f,
-                                                       kAmpMax, kMulawMu, kGainBits));
-    }
-    float new_gain[kChannelsMax * kSubblocksMax];
-    dec_gain(FrameType::Long, new_gain);
-    for (int ch = 0; ch < channels_; ++ch) {
-        const float ratio = new_gain[ch] / old_gain[ch];
-        for (int i = ch * n; i < (ch + 1) * n; ++i) {
-            residual[i] /= ratio;
-            weights[i] *= ratio * ratio;
-        }
-    }
-    quantize_main(residual.data(), weights.data());
-    retain_candidate();
-    restore_best();
+        // All candidates are scored against the same target and synthesis envelope.
+        // Keep the previous two-search encoder result among the candidates: a fresh
+        // approximate VQ search is not guaranteed to improve on its predecessor.
+        const auto target = residual;
+        const auto synthesis_weights = weights;
+        float base_gain[kChannelsMax * kSubblocksMax];
+        dec_gain(FrameType::Long, base_gain);
+        uint8_t best_coeffs[sizeof(main_coeffs_)]{};
+        uint8_t best_gains[sizeof(gain_bits_)]{};
+        double best_error = std::numeric_limits<double>::infinity();
+        const auto& main_mode = mtab_->fmode[static_cast<int>(FrameType::Long)];
+        std::vector<float> candidate(target.size());
+        auto retain_candidate = [&]() {
+            dequant(main_coeffs_, candidate.data(), FrameType::Long,
+                    main_mode.cb0, main_mode.cb1, main_mode.cb_len_read);
+            float gains[kChannelsMax * kSubblocksMax];
+            dec_gain(FrameType::Long, gains);
+            double error = 0;
+            for (int ch = 0; ch < channels_; ++ch) {
+                const double ratio = static_cast<double>(gains[ch]) / base_gain[ch];
+                for (int i = ch * n; i < (ch + 1) * n; ++i) {
+                    const double d = target[i] - ratio * candidate[i];
+                    error += synthesis_weights[i] * d * d;
+                }
+            }
+            if (error < best_error) {
+                best_error = error;
+                std::memcpy(best_coeffs, main_coeffs_, sizeof(main_coeffs_));
+                std::memcpy(best_gains, gain_bits_, sizeof(gain_bits_));
+            }
+        };
+        auto restore_best = [&]() {
+            std::memcpy(main_coeffs_, best_coeffs, sizeof(main_coeffs_));
+            std::memcpy(gain_bits_, best_gains, sizeof(gain_bits_));
+        };
 
-    // Two bounded gain/VQ iterations. For fixed vectors the gain objective is
-    // quadratic, so enumerate the 256 decoder-reconstructed gains cheaply.
-    // This includes both neighbors of the continuous optimum, unlike rounding
-    // in the nonlinear mu-law domain. Keep the fixed-vector candidate as well
-    // as the result of each new VQ search.
-    for (int pass = 0; pass < 2; ++pass) {
-        const double previous_error = best_error;
-        dequant(main_coeffs_, candidate.data(), FrameType::Long,
-                main_mode.cb0, main_mode.cb1, main_mode.cb_len_read);
-        bool changed = false;
+        quantize_main(residual.data(), weights.data());
+        retain_candidate();
+        // Fit the transmitted channel gain to the actual selected vectors.
+        // A nominal codebook RMS alone cannot predict the energy of their sum.
+        std::vector<float> reconstructed(residual.size());
+        const auto& mode = mtab_->fmode[static_cast<int>(FrameType::Long)];
+        dequant(main_coeffs_, reconstructed.data(), FrameType::Long, mode.cb0, mode.cb1, mode.cb_len_read);
+        float old_gain[kChannelsMax * kSubblocksMax];
+        dec_gain(FrameType::Long, old_gain);
         for (int ch = 0; ch < channels_; ++ch) {
             double cross = 0, energy = 0;
             for (int i = ch * n; i < (ch + 1) * n; ++i) {
-                cross += static_cast<double>(synthesis_weights[i]) * target[i] * candidate[i];
-                energy += static_cast<double>(synthesis_weights[i]) * candidate[i] * candidate[i];
+                cross += static_cast<double>(weights[i]) * residual[i] * reconstructed[i];
+                energy += static_cast<double>(weights[i]) * reconstructed[i] * reconstructed[i];
             }
-            if (energy <= 1.0e-20) continue;
-            const double optimum = std::max(0.0, cross / energy);
-            int selected = gain_bits_[ch];
-            double distance = std::numeric_limits<double>::infinity();
-            const float step = kAmpMax / static_cast<float>((1 << kGainBits) - 1);
-            for (int q = 0; q < (1 << kGainBits); ++q) {
-                const float gain = (1.0f / 8192.0f) *
-                    mulawinv(step * 0.5f + step * q, kAmpMax, kMulawMu);
-                const double d = std::fabs(static_cast<double>(gain) / base_gain[ch] - optimum);
-                if (d < distance) { distance = d; selected = q; }
-            }
-            changed |= selected != gain_bits_[ch];
-            gain_bits_[ch] = static_cast<uint8_t>(selected);
+            const float factor = energy > 1.0e-20 ? static_cast<float>(std::max(0.0, cross / energy)) : 1.0f;
+            gain_bits_[ch] = static_cast<uint8_t>(quantize_mu(old_gain[ch] * factor * 8192.0f,
+                                                           kAmpMax, kMulawMu, kGainBits));
         }
-        if (!changed) break;
-        retain_candidate();
-        float gains[kChannelsMax * kSubblocksMax];
-        dec_gain(FrameType::Long, gains);
+        float new_gain[kChannelsMax * kSubblocksMax];
+        dec_gain(FrameType::Long, new_gain);
         for (int ch = 0; ch < channels_; ++ch) {
-            const float ratio = gains[ch] / base_gain[ch];
+            const float ratio = new_gain[ch] / old_gain[ch];
             for (int i = ch * n; i < (ch + 1) * n; ++i) {
-                residual[i] = target[i] / ratio;
-                weights[i] = synthesis_weights[i] * ratio * ratio;
+                residual[i] /= ratio;
+                weights[i] *= ratio * ratio;
             }
         }
         quantize_main(residual.data(), weights.data());
         retain_candidate();
         restore_best();
-        if (best_error >= previous_error) break;
+
+        // Two bounded gain/VQ iterations. For fixed vectors the gain objective is
+        // quadratic, so enumerate the 256 decoder-reconstructed gains cheaply.
+        // This includes both neighbors of the continuous optimum, unlike rounding
+        // in the nonlinear mu-law domain. Keep the fixed-vector candidate as well
+        // as the result of each new VQ search.
+        for (int pass = 0; pass < 2; ++pass) {
+            const double previous_error = best_error;
+            dequant(main_coeffs_, candidate.data(), FrameType::Long,
+                    main_mode.cb0, main_mode.cb1, main_mode.cb_len_read);
+            bool changed = false;
+            for (int ch = 0; ch < channels_; ++ch) {
+                double cross = 0, energy = 0;
+                for (int i = ch * n; i < (ch + 1) * n; ++i) {
+                    cross += static_cast<double>(synthesis_weights[i]) * target[i] * candidate[i];
+                    energy += static_cast<double>(synthesis_weights[i]) * candidate[i] * candidate[i];
+                }
+                if (energy <= 1.0e-20) continue;
+                const double optimum = std::max(0.0, cross / energy);
+                int selected = gain_bits_[ch];
+                double distance = std::numeric_limits<double>::infinity();
+                const float step = kAmpMax / static_cast<float>((1 << kGainBits) - 1);
+                for (int q = 0; q < (1 << kGainBits); ++q) {
+                    const float gain = (1.0f / 8192.0f) *
+                        mulawinv(step * 0.5f + step * q, kAmpMax, kMulawMu);
+                    const double d = std::fabs(static_cast<double>(gain) / base_gain[ch] - optimum);
+                    if (d < distance) { distance = d; selected = q; }
+                }
+                changed |= selected != gain_bits_[ch];
+                gain_bits_[ch] = static_cast<uint8_t>(selected);
+            }
+            if (!changed) break;
+            retain_candidate();
+            float gains[kChannelsMax * kSubblocksMax];
+            dec_gain(FrameType::Long, gains);
+            for (int ch = 0; ch < channels_; ++ch) {
+                const float ratio = gains[ch] / base_gain[ch];
+                for (int i = ch * n; i < (ch + 1) * n; ++i) {
+                    residual[i] = target[i] / ratio;
+                    weights[i] = synthesis_weights[i] * ratio * ratio;
+                }
+            }
+            quantize_main(residual.data(), weights.data());
+            retain_candidate();
+            restore_best();
+            if (best_error >= previous_error) break;
+        }
+        restore_best();
+        return best_error;
+    };
+
+    const double legacy_error = trial(false);
+    if (!cfg_.lsp_search) {
+        write_frame_bits();
+        frames_written_++;
+        return;
     }
-    restore_best();
+    const auto legacy_main = snapshot(main_coeffs_);
+    const auto legacy_gain = snapshot(gain_bits_);
+    const auto legacy_bark = snapshot(bark1_);
+    const auto legacy_bark_use = snapshot(bark_use_hist_);
+    const auto legacy_lpc1 = snapshot(lpc_idx1_);
+    const auto legacy_lpc2 = snapshot(lpc_idx2_);
+    const auto legacy_lpc_hist = snapshot(lpc_hist_idx_);
+    const auto legacy_lsp_state = snapshot(lsp_hist_);
+    const auto legacy_bark_state = snapshot(bark_hist_);
+    const double searched_error = trial(true);
+    if (!(searched_error < legacy_error)) {
+        restore(main_coeffs_, legacy_main);
+        restore(gain_bits_, legacy_gain);
+        restore(bark1_, legacy_bark);
+        restore(bark_use_hist_, legacy_bark_use);
+        restore(lpc_idx1_, legacy_lpc1);
+        restore(lpc_idx2_, legacy_lpc2);
+        restore(lpc_hist_idx_, legacy_lpc_hist);
+        restore(lsp_hist_, legacy_lsp_state);
+        restore(bark_hist_, legacy_bark_state);
+    }
     write_frame_bits();
     frames_written_++;
 }
