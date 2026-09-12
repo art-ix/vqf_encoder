@@ -234,3 +234,13 @@ The native foobar2000 component inherits automatic selection.
 For behavior, API settings and local test commands, see [VQ search breadth](docs/vq-search.md).
 Larger search breadth increases encoding work. No private test audio or its
 measurement results are included in the repository.
+
+
+### Experimental psychoacoustic weighting
+
+`--psychoacoustic` enables a relative simultaneous-masking model for VQ,
+gain refinement and frame-candidate selection. It is **off by default**;
+`--no-psychoacoustic` explicitly restores the existing objective. Frame sizes
+and decoder compatibility are unchanged. This is an initial model awaiting
+listening-based tuning, without temporal masking or short-block switching.
+See [model details and tests](docs/psychoacoustic-model.md).

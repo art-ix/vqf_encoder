@@ -3,6 +3,7 @@
 #include "twinvq/vqf_file.hpp"
 #include "twinvq_mdct.hpp"
 #include "twinvq_window.hpp"
+#include "twinvq_psychoacoustic.hpp"
 
 #include <cmath>
 #include <cstdint>
@@ -108,6 +109,7 @@ void usage() {
               << "       vqf_encode --list-modes\n"
               << "       vqf_encode --test-mdct\n"
               << "       vqf_encode --test-codec\n"
+              << "       vqf_encode --test-codec-psychoacoustic\n"
               << "       vqf_encode --test-codec-basic\n"
               << "       vqf_encode --test-codec-lsp\n"
               << "       vqf_encode --test-codec-bark\n"
@@ -122,6 +124,8 @@ void usage() {
               << "  --lsp-search        enable frame-scored LSP search (default)\n"
               << "  --no-bark-search    disable Bark/history search\n"
               << "  --no-lsp-search     disable LSP search\n"
+              << "  --psychoacoustic    experimental masking weights (default: off)\n"
+              << "  --no-psychoacoustic disable masking weights\n"
               << "  --vq-beam N        VQ breadth: auto (default), 4, 8, 16, 32\n"
               << "  --no-delay           do not prepend priming frames\n"
               << "\nfoobar2000 Converter:\n"
@@ -257,6 +261,8 @@ int main(int argc, char** argv) try {
         return test_codec(false, false);
     if (argc >= 2 && std::string(argv[1]) == "--test-codec-lsp")
         return test_codec(true, false);
+    if (argc >= 2 && std::string(argv[1]) == "--test-codec-psychoacoustic")
+        return test_codec(true, true, true);
     if (argc >= 2 && std::string(argv[1]) == "--test-codec")
         return test_codec();
     if (argc >= 2 && std::string(argv[1]) == "--list-modes") {
@@ -275,7 +281,9 @@ int main(int argc, char** argv) try {
         std::cout << "lpc self-test   " << (d ? "ok" : "FAIL") << " max abs err=" << e4 << "\n";
         const bool e = twinvq::window_transition_self_test(&e5);
         std::cout << "window transitions " << (e ? "ok" : "FAIL") << " max abs err=" << e5 << "\n";
-        return (a && b && c && d && e) ? 0 : 1;
+        const bool p = twinvq::psychoacoustic_self_test();
+        std::cout << "psychoacoustic model " << (p ? "ok" : "FAIL") << "\n";
+        return (a && b && c && d && e && p) ? 0 : 1;
     }
     if (argc >= 2 && std::string(argv[1]) == "--test-roundtrip") {
         const double sec = (argc >= 3) ? std::atof(argv[2]) : 0.6;
@@ -318,6 +326,10 @@ int main(int argc, char** argv) try {
             cfg.bark_search = false;
         } else if (a == "--no-lsp-search") {
             cfg.lsp_search = false;
+        } else if (a == "--psychoacoustic") {
+            cfg.psychoacoustic = true;
+        } else if (a == "--no-psychoacoustic") {
+            cfg.psychoacoustic = false;
         } else if (a == "--vq-beam") {
             const std::string value = need("--vq-beam");
             if (value == "auto") cfg.vq_beam = 0;

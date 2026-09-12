@@ -28,6 +28,8 @@ public:
         // Main-VQ candidates: 0 = auto (16 for 44.1 kHz stereo, 4 otherwise).
         // Explicit choices: 4, 8, 16 or 32.
         int vq_beam = 0;
+        // Experimental relative simultaneous-masking model; opt in for evaluation.
+        bool psychoacoustic = false;
     };
 
     explicit Encoder(const Config& cfg);
@@ -62,7 +64,7 @@ private:
     void analyze_lpc(const float* time_n, float* lpc, float* lsp);
     void quantize_lsp(int ch, const float* target_lsp, float* rec_out, LspSearch search);
     void quantize_gain_bark(int ch, const float* spec, int block_size,
-                            const float* lpc_env, bool search);
+                            const float* lpc_env, bool search, const float* perceptual);
     void quantize_ppc(int ch, float* spec);
     void quantize_main(const float* residual, const float* weights);
     void write_frame_bits();

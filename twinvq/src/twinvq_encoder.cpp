@@ -2,6 +2,7 @@
 #include "twinvq/vqf_file.hpp"
 #include "bitstream.hpp"
 #include "twinvq_mdct.hpp"
+#include "twinvq_psychoacoustic.hpp"
 #include "twinvq_tables.hpp"
 
 #include <algorithm>
@@ -849,7 +850,7 @@ void Encoder::quantize_lsp(int ch, const float* target_lsp, float* rec_out, LspS
 }
 
 void Encoder::quantize_gain_bark(int ch, const float* spec, int block_size,
-                                 const float* lpc_env, bool search) {
+                                 const float* lpc_env, bool search, const float* perceptual) {
     // Long frames only in this encoder: one gain, one bark set.
     double energy = 0;
     for (int i = 0; i < block_size; i++)
@@ -890,7 +891,7 @@ void Encoder::quantize_gain_bark(int ch, const float* spec, int block_size,
             band[static_cast<size_t>(idx)] = st - 1.0f;
             if (search)
                 for (int k = 0; k < w && pos + k < block_size; ++k)
-                    band_weight[idx] += static_cast<double>(lpc_env[pos+k]) * lpc_env[pos+k];
+                    band_weight[idx] += static_cast<double>(lpc_env[pos+k]) * lpc_env[pos+k] * perceptual[pos+k];
             pos += w;
         }
     }
@@ -1123,6 +1124,9 @@ void Encoder::encode_frame(const float* interleaved_n, bool /*force_flush*/) {
                     sizeof(float) * static_cast<size_t>(mtab_->n_lsp));
     }
 
+    std::vector<float> perceptual(spec.size(), 1.0f);
+    if (cfg_.psychoacoustic)
+        psychoacoustic_weights(spec.data(), n, channels_, sample_rate_, perceptual.data());
     const auto original_spec = spec;
     // Trial encodes share input and prior histories. Snapshot only frame state,
     // never the growing output byte vector or pending track PCM.
@@ -1187,7 +1191,7 @@ void Encoder::encode_frame(const float* interleaved_n, bool /*force_flush*/) {
             for (int i = 0; i < n; i++)
                 sp[i] -= ppc_add[static_cast<size_t>(i)];
 
-            quantize_gain_bark(ch, sp, n, env.data(), bark_search);
+            quantize_gain_bark(ch, sp, n, env.data(), bark_search, perceptual.data() + ch * n);
 
             float gain[kChannelsMax * kSubblocksMax];
             dec_gain(FrameType::Long, gain);
@@ -1198,7 +1202,7 @@ void Encoder::encode_frame(const float* interleaved_n, bool /*force_flush*/) {
                 const float b = bark[static_cast<size_t>(i)];
                 resid[i] = (std::fabs(b) > 1.0e-8f) ? sp[i] / b : sp[i];
                 const float synthesis_scale = env[i] * b;
-                weights[ch * n + i] = synthesis_scale * synthesis_scale;
+                weights[ch * n + i] = synthesis_scale * synthesis_scale * perceptual[ch * n + i];
             }
         }
 

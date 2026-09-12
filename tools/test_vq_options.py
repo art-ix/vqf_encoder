@@ -28,6 +28,15 @@ with tempfile.TemporaryDirectory(prefix='vqf-vq-options-') as directory:
                 subprocess.run([exe,'-b',str(bitrate),*flags,str(source),str(output)],
                                check=True,capture_output=True)
                 outputs[option] = output.read_bytes()
+            for flag in ('--no-psychoacoustic', '--psychoacoustic'):
+                subprocess.run([exe, '-b', str(bitrate), flag, str(source), str(output)],
+                               check=True, capture_output=True)
+                data = output.read_bytes()
+                assert len(data) == len(outputs[None]), 'masking changed bit budget'
+                if flag == '--no-psychoacoustic':
+                    assert data == outputs[None], 'masking enabled by default'
+                else:
+                    assert data != outputs[None], 'fixture did not exercise masking'
             expected = '16' if channels == 2 else '4'
             assert outputs[None] == outputs['auto'] == outputs[expected], 'incorrect automatic beam'
             assert len({len(x) for x in outputs.values()}) == 1, 'beam changed bit budget'

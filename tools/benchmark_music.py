@@ -17,6 +17,7 @@ p.add_argument('--starts', type=float, nargs='+', required=True)
 p.add_argument('--seconds', type=float, default=4)
 p.add_argument('--beams', type=int, nargs='+', default=[4,8,16])
 p.add_argument('--bitrates', type=int, nargs='+', default=[80,96])
+p.add_argument('--masking', choices=['off','on'], nargs='+', default=['off'])
 a = p.parse_args()
 root = a.output_dir.resolve()
 repo = Path(__file__).resolve().parents[1]
@@ -41,35 +42,38 @@ for start in a.starts:
     if len(reference) < 16384: p.error('excerpt is too short or beyond end of input')
     for bitrate in a.bitrates:
         for beam in a.beams:
-            encoded = root/f'{stem}-{bitrate}-beam{beam}.vqf'
-            begin = time.perf_counter()
-            subprocess.run([exe,'-b',str(bitrate),'--vq-beam',str(beam),str(wav),str(encoded)],
-                           check=True,capture_output=True)
-            elapsed = time.perf_counter()-begin
-            decoded = subprocess.run(['ffmpeg','-v','error','-i',str(encoded),'-f','f32le','-'],
-                                     check=True,capture_output=True)
-            pcm = np.frombuffer(decoded.stdout,dtype='<f4').reshape(-1,2).astype(np.float64)
-            if len(pcm) < len(reference) or not np.isfinite(pcm).all():
-                raise RuntimeError('invalid decoded PCM')
-            # Current FFmpeg has opposite polarity to the encoder's local decoder.
-            # Fixed zero lag and unity gain: do not hide alignment/gain errors.
-            ref = reference[4096:-4096]
-            out = -pcm[4096:len(reference)-4096]
-            error = ref-out
-            power = np.mean(ref*ref,axis=0)
-            mse = np.mean(error*error,axis=0)
-            n = len(ref)//1024*1024
-            sp = np.sum(ref[:n].reshape(-1,1024,2)**2,axis=(1,2))
-            ep = np.sum(error[:n].reshape(-1,1024,2)**2,axis=(1,2))
-            active = sp > max(sp.max()*1e-6,1e-15)
-            seg = np.mean(np.clip(10*np.log10((sp[active]+1e-30)/(ep[active]+1e-30)),-10,35))
-            row = {'start':start,'kbps':bitrate,'beam':beam,'encode_seconds':elapsed,
-                'bytes':encoded.stat().st_size,'decoded_frames':len(pcm),
-                'snr_db':(10*np.log10(power/mse)).tolist(),
-                'combined_snr_db':float(10*np.log10(power.sum()/mse.sum())),
-                'segmental_snr_db':float(seg),'gain_db':(10*np.log10(np.mean(out*out,axis=0)/power)).tolist(),
-                'peak':float(np.abs(pcm).max()),'over_full_scale_percent':float(100*np.mean(np.abs(pcm)>1)),
-                'demux_warning':bool(decoded.stderr)}
-            results['rows'].append(row)
-            (root/'results.json').write_text(json.dumps(results,indent=2)+'\n')
-            print(json.dumps(row),flush=True)
+            for masking in a.masking:
+                suffix = '-psy' if masking == 'on' else ''
+                encoded = root/f'{stem}-{bitrate}-beam{beam}{suffix}.vqf'
+                begin = time.perf_counter()
+                subprocess.run([exe,'-b',str(bitrate),'--vq-beam',str(beam),
+                    '--psychoacoustic' if masking == 'on' else '--no-psychoacoustic',str(wav),str(encoded)],
+                               check=True,capture_output=True)
+                elapsed = time.perf_counter()-begin
+                decoded = subprocess.run(['ffmpeg','-v','error','-i',str(encoded),'-f','f32le','-'],
+                                         check=True,capture_output=True)
+                pcm = np.frombuffer(decoded.stdout,dtype='<f4').reshape(-1,2).astype(np.float64)
+                if len(pcm) < len(reference) or not np.isfinite(pcm).all():
+                    raise RuntimeError('invalid decoded PCM')
+                # Current FFmpeg has opposite polarity to the encoder's local decoder.
+                # Fixed zero lag and unity gain: do not hide alignment/gain errors.
+                ref = reference[4096:-4096]
+                out = -pcm[4096:len(reference)-4096]
+                error = ref-out
+                power = np.mean(ref*ref,axis=0)
+                mse = np.mean(error*error,axis=0)
+                n = len(ref)//1024*1024
+                sp = np.sum(ref[:n].reshape(-1,1024,2)**2,axis=(1,2))
+                ep = np.sum(error[:n].reshape(-1,1024,2)**2,axis=(1,2))
+                active = sp > max(sp.max()*1e-6,1e-15)
+                seg = np.mean(np.clip(10*np.log10((sp[active]+1e-30)/(ep[active]+1e-30)),-10,35))
+                row = {'start':start,'kbps':bitrate,'beam':beam,'masking':masking,'encode_seconds':elapsed,
+                    'bytes':encoded.stat().st_size,'decoded_frames':len(pcm),
+                    'snr_db':(10*np.log10(power/mse)).tolist(),
+                    'combined_snr_db':float(10*np.log10(power.sum()/mse.sum())),
+                    'segmental_snr_db':float(seg),'gain_db':(10*np.log10(np.mean(out*out,axis=0)/power)).tolist(),
+                    'peak':float(np.abs(pcm).max()),'over_full_scale_percent':float(100*np.mean(np.abs(pcm)>1)),
+                    'demux_warning':bool(decoded.stderr)}
+                results['rows'].append(row)
+                (root/'results.json').write_text(json.dumps(results,indent=2)+'\n')
+                print(json.dumps(row),flush=True)

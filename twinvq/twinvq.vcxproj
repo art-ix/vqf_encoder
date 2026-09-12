@@ -60,6 +60,7 @@
     <ClCompile Include="src\vqf_file.cpp" />
     <ClCompile Include="src\twinvq_mdct.cpp" />
     <ClCompile Include="src\twinvq_window_test.cpp" />
+    <ClCompile Include="src\twinvq_psychoacoustic.cpp" />
     <ClCompile Include="src\twinvq_decoder.cpp" />
     <ClCompile Include="src\twinvq_encoder.cpp" />
     <ClCompile Include="src\twinvq_tables.cpp">
@@ -77,6 +78,7 @@
     <ClInclude Include="src\bitstream.hpp" />
     <ClInclude Include="src\twinvq_mdct.hpp" />
     <ClInclude Include="src\twinvq_window.hpp" />
+    <ClInclude Include="src\twinvq_psychoacoustic.hpp" />
     <ClInclude Include="src\twinvq_tables.hpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

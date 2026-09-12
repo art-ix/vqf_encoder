@@ -47,7 +47,8 @@ int bark_history_flags(const twinvq::Encoder& enc) {
 }
 
 int test_codec(bool lsp_search = twinvq::Encoder::Config{}.lsp_search,
-               bool bark_search = twinvq::Encoder::Config{}.bark_search) {
+               bool bark_search = twinvq::Encoder::Config{}.bark_search,
+               bool psychoacoustic = false) {
     int history_flags = 0;
     int mode_count = 0;
     const auto* modes = twinvq::legal_modes(mode_count);
@@ -58,6 +59,7 @@ int test_codec(bool lsp_search = twinvq::Encoder::Config{}.lsp_search,
         cfg.channels = channels;
         cfg.lsp_search = lsp_search;
         cfg.bark_search = bark_search;
+        cfg.psychoacoustic = psychoacoustic;
         twinvq::Encoder whole(cfg), chunked(cfg);
         const int hop = whole.frame_samples(), frames = 7 * hop + 17;
         std::vector<float> pcm(frames * channels);

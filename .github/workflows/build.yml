@@ -63,6 +63,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           .\bin\x64\Release\vqf_encode.exe --test-mdct
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .\bin\x64\Release\vqf_encode.exe --test-codec-psychoacoustic
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python tools/test_vq_options.py bin/x64/Release/vqf_encode.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           .\bin\x64\Release\vqf_encode.exe --test-roundtrip 0.4

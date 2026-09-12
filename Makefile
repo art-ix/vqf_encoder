@@ -9,7 +9,7 @@ DEPFLAGS = -MMD -MP
 
 LIB_SRCS = twinvq/src/vqf_file.cpp twinvq/src/twinvq_mdct.cpp \
            twinvq/src/twinvq_decoder.cpp twinvq/src/twinvq_encoder.cpp \
-           twinvq/src/twinvq_window_test.cpp
+           twinvq/src/twinvq_window_test.cpp twinvq/src/twinvq_psychoacoustic.cpp
 LIB_OBJS = $(patsubst twinvq/src/%.cpp,obj/%.o,$(LIB_SRCS)) obj/twinvq_tables.o
 DECODE_OBJS = obj/vqf_file.o obj/twinvq_mdct.o obj/twinvq_decoder.o obj/twinvq_tables.o
 ALL_OBJS = $(LIB_OBJS) obj/vqf_encode.o obj/vqf_decode.o
@@ -44,6 +44,7 @@ test: all
 	./bin/vqf_encode --test-resample
 	./bin/vqf_encode --test-mdct
 	./bin/vqf_encode --test-codec
+	./bin/vqf_encode --test-codec-psychoacoustic
 	./bin/vqf_encode --test-codec-lsp
 	./bin/vqf_encode --test-codec-bark
 	./bin/vqf_encode --test-codec-basic
