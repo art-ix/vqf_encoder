@@ -32,3 +32,27 @@ Do not commit private sources, excerpts or their measurement results without
 authorization. No recording-derived results are included in this document.
 See [block-switching prerequisites](transient-block-implementation.md) for the
 separate transform/subblock work required before enabling short frames.
+
+
+## Final gain refinement
+
+After the bounded gain/VQ iterations, refit each transmitted channel gain to
+the final retained codevectors. A last VQ search can change the vectors after
+the preceding gain fit. Ending at that point leaves a potentially stale gain.
+
+For fixed vectors `v`, target `x`, weights `w` and gain ratio `r`, the error is
+`sum(w * (x - r*v)^2)`. Its continuous minimum is
+`max(0, sum(w*x*v) / sum(w*v*v))`. Search all 256 decoder-reconstructed gains
+for the nearest available ratio. Retain the preceding frame candidate if the
+explicit error calculation does not improve. Do not run another VQ search
+after this final fit.
+
+This adds no bits and no additional VQ search. It uses the same objective as
+the rest of the encoder, including psychoacoustic weights when enabled. The
+retention guarantee applies to this frame candidate with fixed histories;
+it does not guarantee improved listening quality or time-domain SNR for every
+recording. The selected LSP/Bark histories can still affect later frames.
+
+Validation commands include `--test-codec`, `--test-codec-psychoacoustic` and
+`tools/test_vq_options.py`. They cover normal/masking objectives, all supported
+mode/channel combinations, chunking/flush behavior and the fixed bit budget.

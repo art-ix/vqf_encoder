@@ -1274,13 +1274,9 @@ void Encoder::encode_frame(const float* interleaved_n, bool /*force_flush*/) {
         retain_candidate();
         restore_best();
 
-        // Two bounded gain/VQ iterations. For fixed vectors the gain objective is
-        // quadratic, so enumerate the 256 decoder-reconstructed gains cheaply.
-        // This includes both neighbors of the continuous optimum, unlike rounding
-        // in the nonlinear mu-law domain. Keep the fixed-vector candidate as well
-        // as the result of each new VQ search.
-        for (int pass = 0; pass < 2; ++pass) {
-            const double previous_error = best_error;
+        // Optimize gain for the currently transmitted vectors. This is also
+        // used after the last VQ pass, which may have changed those vectors.
+        auto fit_candidate_gain = [&]() {
             dequant(main_coeffs_, candidate.data(), FrameType::Long,
                     main_mode.cb0, main_mode.cb1, main_mode.cb_len_read);
             bool changed = false;
@@ -1304,6 +1300,13 @@ void Encoder::encode_frame(const float* interleaved_n, bool /*force_flush*/) {
                 changed |= selected != gain_bits_[ch];
                 gain_bits_[ch] = static_cast<uint8_t>(selected);
             }
+            return changed;
+        };
+
+        // Preserve the two bounded gain/VQ searches and their retained winners.
+        for (int pass = 0; pass < 2; ++pass) {
+            const double previous_error = best_error;
+            const bool changed = fit_candidate_gain();
             if (!changed) break;
             retain_candidate();
             float gains[kChannelsMax * kSubblocksMax];
@@ -1320,6 +1323,10 @@ void Encoder::encode_frame(const float* interleaved_n, bool /*force_flush*/) {
             restore_best();
             if (best_error >= previous_error) break;
         }
+        // Finish with exact decoded-gain selection, not another VQ search:
+        // the final codevectors should never keep a gain fitted to older ones.
+        // retain_candidate still guards against floating-point scoring ties.
+        if (fit_candidate_gain()) retain_candidate();
         restore_best();
         return best_error;
     };
