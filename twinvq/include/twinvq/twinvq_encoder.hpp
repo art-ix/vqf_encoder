@@ -14,6 +14,7 @@ bool lpc_analysis_self_test(float* max_abs_err);
 class Encoder {
 public:
     enum class BlockMode { Long, Short, Medium, Adaptive };
+    enum class Simd { Auto, Scalar, Sse41, Avx2 };
     struct Config {
         int sample_rate = 44100;
         int channels = 2;
@@ -37,6 +38,8 @@ public:
         bool temporal_search = false;
         // Experimental period, shape and gain search in Long frames.
         bool ppc_search = false;
+        int threads = 1; // Parallel independent main-VQ groups; 1..32.
+        Simd simd = Simd::Auto;
     };
 
     explicit Encoder(const Config& cfg);

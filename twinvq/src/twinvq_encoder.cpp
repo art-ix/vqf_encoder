@@ -6,6 +6,8 @@
 #include "twinvq_psychoacoustic.hpp"
 #include "twinvq_tables.hpp"
 
+#include "twinvq_simd.hpp"
+#include <future>
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -17,26 +19,6 @@ namespace twinvq {
 namespace {
 
 constexpr float kPi = 3.14159265358979323846f;
-
-// Nonnegative terms make each prefix a lower bound. Keep the original
-// accumulation order and abandon only candidates that cannot beat the limit.
-float bounded_vector_error(const float* target, const float* weight,
-                           const int16_t* code, int sign, int length, float limit) {
-    float error = 0;
-    int j = 0;
-    for (; j + 4 <= length; j += 4) {
-        for (int k = 0; k < 4; ++k) {
-            const float d = target[j + k] - sign * code[j + k];
-            error += weight[j + k] * d * d;
-        }
-        if (error >= limit) return error;
-    }
-    for (; j < length; ++j) {
-        const float d = target[j] - sign * code[j];
-        error += weight[j] * d * d;
-    }
-    return error;
-}
 
 float mulawinv(float y, float clip, float mu) {
     y = std::clamp(y / clip, -1.0f, 1.0f);
@@ -340,6 +322,11 @@ bool pick_encoder_mode(int sample_rate, int channels, int bitrate_kbps,
 }
 
 Encoder::Encoder(const Config& cfg) : cfg_(cfg) {
+    if (cfg.threads < 1 || cfg.threads > 32)
+        throw std::invalid_argument("threads must be between 1 and 32");
+    if ((cfg.simd == Simd::Sse41 && !detail::has_sse41()) ||
+        (cfg.simd == Simd::Avx2 && !detail::has_avx2()))
+        throw std::invalid_argument("requested SIMD is not supported by this CPU/OS");
     if (cfg.vq_beam != 0 && cfg.vq_beam != 4 && cfg.vq_beam != 8 && cfg.vq_beam != 16 && cfg.vq_beam != 32)
         throw std::invalid_argument("VQ beam must be auto (0), 4, 8, 16 or 32");
     if (cfg.block_mode != BlockMode::Long && cfg.block_mode != BlockMode::Short && cfg.block_mode != BlockMode::Medium && cfg.block_mode != BlockMode::Adaptive)
@@ -1090,163 +1077,182 @@ void Encoder::quantize_vectors(const float* residual, const float* weights, Fram
     const int16_t* cb0 = ppc ? mtab_->ppc_shape_cb : mtab_->fmode[fi].cb0;
     const int16_t* cb1 = ppc ? cb0 + cb_len * kPpcShapeCbSize : mtab_->fmode[fi].cb1;
     uint8_t* dst = ppc ? ppc_coeffs_ : main_coeffs_;
-    int pos = 0;
-    std::vector<float> target(cb_len), weight(cb_len), rest(cb_len);
-    for (int i = 0; i < n_div_[fi]; i++) {
-        const int length = length_[fi][i >= length_change_[fi]];
-        const int second = (i >= bits_main_spec_change_[fi]);
-        const int bits0 = bits_main_spec_[0][fi][second];
-        const int bits1 = bits_main_spec_[1][fi][second];
-        const int n0 = (bits0 == 7) ? 64 : (1 << bits0);
-        const int n1 = (bits1 == 7) ? 64 : (1 << bits1);
-        const bool sign0_en = bits0 == 7;
-        const bool sign1_en = bits1 == 7;
+    detail::VectorError bounded_vector_error = detail::scalar_error;
+#if defined(TWINVQ_X86)
+    if (cfg_.simd == Simd::Avx2 || (cfg_.simd == Simd::Auto && detail::has_avx2()))
+        bounded_vector_error = detail::avx2_error;
+    else if (cfg_.simd == Simd::Sse41 || (cfg_.simd == Simd::Auto && detail::has_sse41()))
+        bounded_vector_error = detail::sse41_error;
+#endif
+    const auto encode_range = [&](int begin, int end) {
+        int pos = std::min(begin, static_cast<int>(length_change_[fi])) * length_[fi][0] +
+                  std::max(0, begin - static_cast<int>(length_change_[fi])) * length_[fi][1];
+        std::vector<float> target(cb_len), weight(cb_len), rest(cb_len);
+        for (int i = begin; i < end; i++) {
+            const int length = length_[fi][i >= length_change_[fi]];
+            const int second = (i >= bits_main_spec_change_[fi]);
+            const int bits0 = bits_main_spec_[0][fi][second];
+            const int bits1 = bits_main_spec_[1][fi][second];
+            const int n0 = (bits0 == 7) ? 64 : (1 << bits0);
+            const int n1 = (bits1 == 7) ? 64 : (1 << bits1);
+            const bool sign0_en = bits0 == 7;
+            const bool sign1_en = bits1 == 7;
 
-        float max_weight = 1.0e-30f;
-        for (int j = 0; j < length; j++) {
-            target[static_cast<size_t>(j)] = residual[permut_[fi][pos + j]];
-            weight[j] = weights[permut_[fi][pos + j]];
-            max_weight = std::max(max_weight, weight[j]);
-        }
-        for (int j = 0; j < length; ++j) weight[j] /= max_weight;
+            float max_weight = 1.0e-30f;
+            for (int j = 0; j < length; j++) {
+                target[static_cast<size_t>(j)] = residual[permut_[fi][pos + j]];
+                weight[j] = weights[permut_[fi][pos + j]];
+                max_weight = std::max(max_weight, weight[j]);
+            }
+            for (int j = 0; j < length; ++j) weight[j] /= max_weight;
 
-        int best0 = 0, best1 = 0, s0 = 1, s1 = 1;
-        float best_e = 1.0e30f;
+            int best0 = 0, best1 = 0, s0 = 1, s1 = 1;
+            float best_e = 1.0e30f;
 
-        // Keep several first-stage choices: the closest cb0 alone need not
-        // belong to the best cb0+cb1 pair. Score in reconstructed MDCT units
-        // so LPC peaks do not amplify otherwise small quantization errors.
-        const int beam_size = cfg_.vq_beam;
-        float beam_error[32];
-        int beam_index[32]{}, beam_sign[32]{};
-        std::fill_n(beam_error, beam_size, 1.0e30f);
-        for (int a = 0; a < n0; a++) {
-            const int16_t* t0 = cb0 + a * cb_len;
-            const int smax = sign0_en ? 2 : 1;
-            for (int s = 0; s < smax; s++) {
-                const int sg = (s == 0) ? 1 : -1;
-                const float e = bounded_vector_error(target.data(), weight.data(), t0,
-                                                     sg, length, beam_error[beam_size - 1]);
-                for (int slot = 0; slot < beam_size; ++slot) {
-                    if (e >= beam_error[slot]) continue;
-                    for (int k = beam_size - 1; k > slot; --k) {
-                        beam_error[k] = beam_error[k - 1];
-                        beam_index[k] = beam_index[k - 1];
-                        beam_sign[k] = beam_sign[k - 1];
+            // Keep several first-stage choices: the closest cb0 alone need not
+            // belong to the best cb0+cb1 pair. Score in reconstructed MDCT units
+            // so LPC peaks do not amplify otherwise small quantization errors.
+            const int beam_size = cfg_.vq_beam;
+            float beam_error[32];
+            int beam_index[32]{}, beam_sign[32]{};
+            std::fill_n(beam_error, beam_size, 1.0e30f);
+            for (int a = 0; a < n0; a++) {
+                const int16_t* t0 = cb0 + a * cb_len;
+                const int smax = sign0_en ? 2 : 1;
+                for (int s = 0; s < smax; s++) {
+                    const int sg = (s == 0) ? 1 : -1;
+                    const float e = bounded_vector_error(target.data(), weight.data(), t0,
+                                                         sg, length, beam_error[beam_size - 1]);
+                    for (int slot = 0; slot < beam_size; ++slot) {
+                        if (e >= beam_error[slot]) continue;
+                        for (int k = beam_size - 1; k > slot; --k) {
+                            beam_error[k] = beam_error[k - 1];
+                            beam_index[k] = beam_index[k - 1];
+                            beam_sign[k] = beam_sign[k - 1];
+                        }
+                        beam_error[slot] = e; beam_index[slot] = a; beam_sign[slot] = sg;
+                        break;
                     }
-                    beam_error[slot] = e; beam_index[slot] = a; beam_sign[slot] = sg;
-                    break;
                 }
             }
-        }
-        auto refine_pair = [&]() {
-            for (int pass = 0; pass < 2; ++pass) {
-                for (int stage = 0; stage < 2; ++stage) {
-                    const int16_t* fixed = stage ? cb0 + best0 * cb_len : cb1 + best1 * cb_len;
-                    const int sign = stage ? s0 : s1;
-                    for (int j = 0; j < length; ++j) rest[j] = target[j] - sign * fixed[j];
-                    const int16_t* cb = stage ? cb1 : cb0;
-                    for (int a = 0; a < (stage ? n1 : n0); ++a) {
-                        for (int s = 0; s < ((stage ? sign1_en : sign0_en) ? 2 : 1); ++s) {
-                            const int sg = s ? -1 : 1;
-                            const float e = bounded_vector_error(rest.data(), weight.data(), cb + a * cb_len,
-                                                                 sg, length, best_e);
-                            if (e < best_e) {
-                                best_e = e;
-                                if (stage) { best1 = a; s1 = sg; }
-                                else { best0 = a; s0 = sg; }
+            auto refine_pair = [&]() {
+                for (int pass = 0; pass < 2; ++pass) {
+                    for (int stage = 0; stage < 2; ++stage) {
+                        const int16_t* fixed = stage ? cb0 + best0 * cb_len : cb1 + best1 * cb_len;
+                        const int sign = stage ? s0 : s1;
+                        for (int j = 0; j < length; ++j) rest[j] = target[j] - sign * fixed[j];
+                        const int16_t* cb = stage ? cb1 : cb0;
+                        for (int a = 0; a < (stage ? n1 : n0); ++a) {
+                            for (int s = 0; s < ((stage ? sign1_en : sign0_en) ? 2 : 1); ++s) {
+                                const int sg = s ? -1 : 1;
+                                const float e = bounded_vector_error(rest.data(), weight.data(), cb + a * cb_len,
+                                                                     sg, length, best_e);
+                                if (e < best_e) {
+                                    best_e = e;
+                                    if (stage) { best1 = a; s1 = sg; }
+                                    else { best0 = a; s0 = sg; }
+                                }
                             }
                         }
                     }
                 }
-            }
-        };
-        for (int slot = 0; slot < beam_size; ++slot) {
-            if (!beam_sign[slot]) continue;
-            const int16_t* t0 = cb0 + beam_index[slot] * cb_len;
-            for (int j = 0; j < length; ++j) rest[j] = target[j] - beam_sign[slot] * t0[j];
-            for (int b = 0; b < n1; b++) {
-                const int16_t* t1 = cb1 + b * cb_len;
-                for (int s = 0; s < (sign1_en ? 2 : 1); s++) {
-                    const int sg = (s == 0) ? 1 : -1;
-                    const float e = bounded_vector_error(rest.data(), weight.data(), t1,
-                                                         sg, length, best_e);
-                    if (e < best_e) {
-                        best_e = e;
-                        best0 = beam_index[slot]; s0 = beam_sign[slot];
-                        best1 = b; s1 = sg;
+            };
+            for (int slot = 0; slot < beam_size; ++slot) {
+                if (!beam_sign[slot]) continue;
+                const int16_t* t0 = cb0 + beam_index[slot] * cb_len;
+                for (int j = 0; j < length; ++j) rest[j] = target[j] - beam_sign[slot] * t0[j];
+                for (int b = 0; b < n1; b++) {
+                    const int16_t* t1 = cb1 + b * cb_len;
+                    for (int s = 0; s < (sign1_en ? 2 : 1); s++) {
+                        const int sg = (s == 0) ? 1 : -1;
+                        const float e = bounded_vector_error(rest.data(), weight.data(), t1,
+                                                             sg, length, best_e);
+                        if (e < best_e) {
+                            best_e = e;
+                            best0 = beam_index[slot]; s0 = beam_sign[slot];
+                            best1 = b; s1 = sg;
+                        }
                     }
                 }
-            }
-            // Refine each prefix of four and retain its winner. A wider beam
-            // includes the old four-candidate solution and cannot increase
-            // this fixed-target vector error merely by choosing a new seed.
-            if ((slot + 1) % 4 != 0) continue;
-            refine_pair();
+                // Refine each prefix of four and retain its winner. A wider beam
+                // includes the old four-candidate solution and cannot increase
+                // this fixed-target vector error merely by choosing a new seed.
+                if ((slot + 1) % 4 != 0) continue;
+                refine_pair();
 
-        } // beam candidates and prefix refinement
+            } // beam candidates and prefix refinement
 
-        // Independently seed from cb1 as well: nearest cb0 entries need not
-        // contain the best pair. Eight reverse seeds supplement every beam size.
-        // Refine independently, then merge, preserving the forward winner and
-        // the smaller-beam inclusion property for fixed targets and weights.
-        const int forward0 = best0, forward1 = best1, forward_s0 = s0, forward_s1 = s1;
-        const float forward_error = best_e;
-        constexpr int reverse_beam = 8;
-        float reverse_error[reverse_beam];
-        int reverse_index[reverse_beam]{}, reverse_sign[reverse_beam]{};
-        std::fill_n(reverse_error, reverse_beam, 1.0e30f);
-        for (int b = 0; b < n1; ++b) {
-            for (int sign = 0; sign < (sign1_en ? 2 : 1); ++sign) {
-                const int sg = sign ? -1 : 1;
-                const float e = bounded_vector_error(target.data(), weight.data(), cb1 + b * cb_len,
-                                                     sg, length, reverse_error[reverse_beam - 1]);
-                for (int slot = 0; slot < reverse_beam; ++slot) {
-                    if (e >= reverse_error[slot]) continue;
-                    for (int k = reverse_beam - 1; k > slot; --k) {
-                        reverse_error[k] = reverse_error[k - 1];
-                        reverse_index[k] = reverse_index[k - 1];
-                        reverse_sign[k] = reverse_sign[k - 1];
-                    }
-                    reverse_error[slot] = e; reverse_index[slot] = b; reverse_sign[slot] = sg;
-                    break;
-                }
-            }
-        }
-        best_e = 1.0e30f;
-        best0 = best1 = 0; s0 = s1 = 1;
-        const int reverse_count = std::min(reverse_beam, n1 * (sign1_en ? 2 : 1));
-        for (int slot = 0; slot < reverse_count; ++slot) {
-            if (!reverse_sign[slot]) continue;
-            for (int j = 0; j < length; ++j)
-                rest[j] = target[j] - reverse_sign[slot] * cb1[reverse_index[slot] * cb_len + j];
-            for (int a = 0; a < n0; ++a) {
-                for (int sign = 0; sign < (sign0_en ? 2 : 1); ++sign) {
+            // Independently seed from cb1 as well: nearest cb0 entries need not
+            // contain the best pair. Eight reverse seeds supplement every beam size.
+            // Refine independently, then merge, preserving the forward winner and
+            // the smaller-beam inclusion property for fixed targets and weights.
+            const int forward0 = best0, forward1 = best1, forward_s0 = s0, forward_s1 = s1;
+            const float forward_error = best_e;
+            constexpr int reverse_beam = 8;
+            float reverse_error[reverse_beam];
+            int reverse_index[reverse_beam]{}, reverse_sign[reverse_beam]{};
+            std::fill_n(reverse_error, reverse_beam, 1.0e30f);
+            for (int b = 0; b < n1; ++b) {
+                for (int sign = 0; sign < (sign1_en ? 2 : 1); ++sign) {
                     const int sg = sign ? -1 : 1;
-                    const float e = bounded_vector_error(rest.data(), weight.data(), cb0 + a * cb_len,
-                                                         sg, length, best_e);
-                    if (e < best_e) {
-                        best_e = e; best0 = a; s0 = sg;
-                        best1 = reverse_index[slot]; s1 = reverse_sign[slot];
+                    const float e = bounded_vector_error(target.data(), weight.data(), cb1 + b * cb_len,
+                                                         sg, length, reverse_error[reverse_beam - 1]);
+                    for (int slot = 0; slot < reverse_beam; ++slot) {
+                        if (e >= reverse_error[slot]) continue;
+                        for (int k = reverse_beam - 1; k > slot; --k) {
+                            reverse_error[k] = reverse_error[k - 1];
+                            reverse_index[k] = reverse_index[k - 1];
+                            reverse_sign[k] = reverse_sign[k - 1];
+                        }
+                        reverse_error[slot] = e; reverse_index[slot] = b; reverse_sign[slot] = sg;
+                        break;
                     }
                 }
             }
-            if ((slot + 1) % 4 == 0 || slot + 1 == reverse_count) refine_pair();
-        }
-        if (forward_error <= best_e) {
-            best0 = forward0; best1 = forward1; s0 = forward_s0; s1 = forward_s1;
-        }
+            best_e = 1.0e30f;
+            best0 = best1 = 0; s0 = s1 = 1;
+            const int reverse_count = std::min(reverse_beam, n1 * (sign1_en ? 2 : 1));
+            for (int slot = 0; slot < reverse_count; ++slot) {
+                if (!reverse_sign[slot]) continue;
+                for (int j = 0; j < length; ++j)
+                    rest[j] = target[j] - reverse_sign[slot] * cb1[reverse_index[slot] * cb_len + j];
+                for (int a = 0; a < n0; ++a) {
+                    for (int sign = 0; sign < (sign0_en ? 2 : 1); ++sign) {
+                        const int sg = sign ? -1 : 1;
+                        const float e = bounded_vector_error(rest.data(), weight.data(), cb0 + a * cb_len,
+                                                             sg, length, best_e);
+                        if (e < best_e) {
+                            best_e = e; best0 = a; s0 = sg;
+                            best1 = reverse_index[slot]; s1 = reverse_sign[slot];
+                        }
+                    }
+                }
+                if ((slot + 1) % 4 == 0 || slot + 1 == reverse_count) refine_pair();
+            }
+            if (forward_error <= best_e) {
+                best0 = forward0; best1 = forward1; s0 = forward_s0; s1 = forward_s1;
+            }
 
-        uint8_t c0 = static_cast<uint8_t>(best0);
-        uint8_t c1 = static_cast<uint8_t>(best1);
-        if (sign0_en && s0 < 0)
-            c0 |= 0x40;
-        if (sign1_en && s1 < 0)
-            c1 |= 0x40;
-        *dst++ = c0;
-        *dst++ = c1;
-        pos += length;
-    }
+            uint8_t c0 = static_cast<uint8_t>(best0);
+            uint8_t c1 = static_cast<uint8_t>(best1);
+            if (sign0_en && s0 < 0)
+                c0 |= 0x40;
+            if (sign1_en && s1 < 0)
+                c1 |= 0x40;
+            dst[2 * i] = c0;
+            dst[2 * i + 1] = c1;
+            pos += length;
+        }
+    };
+    // PPC groups are small. Main-VQ tasks share only immutable inputs and
+    // write disjoint coefficient pairs; all workers join before gain fitting.
+    const int workers = ppc ? 1 : std::min(cfg_.threads, std::max(1, n_div_[fi] / 16));
+    std::vector<std::future<void>> pending;
+    for (int worker = 1; worker < workers; ++worker)
+        pending.push_back(std::async(std::launch::async, encode_range,
+            n_div_[fi] * worker / workers, n_div_[fi] * (worker + 1) / workers));
+    encode_range(0, n_div_[fi] / workers);
+    for (auto& task : pending) task.get();
 }
 
 // Joint global/sub-gain search in decoder units. For a fixed global gain,

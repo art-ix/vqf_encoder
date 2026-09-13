@@ -54,7 +54,7 @@ int test_codec(bool lsp_search = twinvq::Encoder::Config{}.lsp_search,
                bool bark_search = twinvq::Encoder::Config{}.bark_search,
                bool psychoacoustic = false,
                twinvq::Encoder::BlockMode blocks = twinvq::Encoder::BlockMode::Long,
-               bool ppc_search = false) {
+               bool ppc_search = false, int threads = 1) {
     int ppc_frames = 0;
     int history_flags = 0;
     int mode_count = 0;
@@ -68,6 +68,7 @@ int test_codec(bool lsp_search = twinvq::Encoder::Config{}.lsp_search,
         cfg.bark_search = bark_search;
         cfg.psychoacoustic = psychoacoustic;
         cfg.block_mode = blocks;
+        cfg.threads = threads;
         cfg.ppc_search = ppc_search;
         twinvq::Encoder whole(cfg), chunked(cfg);
         const int hop = whole.frame_samples(), frames = 7 * hop + 17;

@@ -303,3 +303,13 @@ Encoder searches avoid duplicate frame candidates and stop scoring VQ vectors
 once their error cannot beat the current selection. Search options and bitstream
 fields are unchanged. See [performance notes](docs/encoder-search-performance.md)
 for the equivalence check and benchmark procedure.
+
+### SIMD and multiple workers
+
+The encoder automatically selects AVX2, SSE4.1 or scalar VQ distance evaluation
+according to CPU/OS support. Use `--simd scalar`, `--simd sse41` or `--simd avx2`
+to choose explicitly. `--threads 4` evaluates independent main-VQ groups with
+up to four workers; the default is one worker. Frames remain sequential.
+
+These options preserve the search and output format. See
+[SIMD and threading](docs/simd-and-threads.md) for usage, portability and tests.

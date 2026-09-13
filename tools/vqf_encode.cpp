@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "codec_tests.hpp"
+#include "simd_tests.hpp"
 #include "resample.hpp"
 #include "resample_tests.hpp"
 
@@ -127,6 +128,8 @@ void usage() {
               << "  --psychoacoustic    experimental masking weights (default: off)\n"
               << "  --no-psychoacoustic disable masking weights\n"
               << "  --block-mode MODE  blocks: long (default), short, medium, adaptive\n"
+              << "  --threads N        VQ workers, 1..32 (default 1)\n"
+              << "  --simd MODE        auto, scalar, sse41 or avx2\n"
               << "  --ppc-search       experimental harmonic period/shape/gain search\n"
               << "  --no-ppc-search    disable PPC search (default)\n"
               << "  --temporal-search  experimental time-domain candidate ranking\n"
@@ -268,8 +271,12 @@ int main(int argc, char** argv) try {
         return test_codec(true, false);
     if (argc >= 2 && std::string(argv[1]) == "--test-codec-psychoacoustic")
         return test_codec(true, true, true);
+    if (argc >= 2 && std::string(argv[1]) == "--test-simd")
+        return test_simd();
     if (argc >= 2 && std::string(argv[1]) == "--test-codec-ppc-time")
         return test_codec_adaptive(true, true);
+    if (argc >= 2 && std::string(argv[1]) == "--test-codec-parallel")
+        return test_codec(true, true, false, twinvq::Encoder::BlockMode::Long, true, 4);
     if (argc >= 2 && std::string(argv[1]) == "--test-codec-ppc")
         return test_codec(true, true, false, twinvq::Encoder::BlockMode::Long, true);
     if (argc >= 2 && std::string(argv[1]) == "--test-codec-time")
@@ -354,6 +361,18 @@ int main(int argc, char** argv) try {
             else if (value == "medium") cfg.block_mode = twinvq::Encoder::BlockMode::Medium;
             else if (value == "adaptive") cfg.block_mode = twinvq::Encoder::BlockMode::Adaptive;
             else throw std::invalid_argument("block mode must be long, short, medium or adaptive");
+        } else if (a == "--threads") {
+            const std::string value = need(a.c_str());
+            if (value.empty() || value.find_first_not_of("0123456789") != std::string::npos || value.size() > 2)
+                throw std::invalid_argument("threads must be between 1 and 32");
+            cfg.threads = std::stoi(value);
+        } else if (a == "--simd") {
+            const std::string value = need(a.c_str());
+            if (value == "auto") cfg.simd = twinvq::Encoder::Simd::Auto;
+            else if (value == "scalar") cfg.simd = twinvq::Encoder::Simd::Scalar;
+            else if (value == "sse41") cfg.simd = twinvq::Encoder::Simd::Sse41;
+            else if (value == "avx2") cfg.simd = twinvq::Encoder::Simd::Avx2;
+            else throw std::invalid_argument("SIMD must be auto, scalar, sse41 or avx2");
         } else if (a == "--ppc-search") {
             cfg.ppc_search = true;
         } else if (a == "--no-ppc-search") {

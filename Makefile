@@ -2,7 +2,7 @@ CXX ?= g++
 # Codebook tables are data — skip -O2 / exceptions / RTTI. The rest of the
 # library is compiled to separate .o files so encoder.cpp edits do not
 # re-parse 575 KB of arrays, and encode/decode share objects.
-CXXFLAGS ?= -O2 -std=c++17 -Wall -Wno-unused-function -pipe
+CXXFLAGS ?= -pthread -O2 -std=c++17 -Wall -Wno-unused-function -pipe
 TABLEFLAGS ?= -O0 -g0 -fno-exceptions -fno-rtti -fno-var-tracking -std=c++17 -Wall -Wno-unused-function -pipe
 CPPFLAGS ?= -Itwinvq/include -Itwinvq/src
 DEPFLAGS = -MMD -MP
@@ -49,6 +49,8 @@ test: all
 	./bin/vqf_encode --test-codec-adaptive
 	./bin/vqf_encode --test-codec-time
 	./bin/vqf_encode --test-codec-ppc
+	./bin/vqf_encode --test-codec-parallel
+	python3 tools/test_parallel_options.py bin/vqf_encode
 	./bin/vqf_encode --test-codec-ppc-time
 	./bin/vqf_encode --test-codec-psychoacoustic
 	./bin/vqf_encode --test-codec-lsp
