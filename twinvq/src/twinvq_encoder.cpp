@@ -1552,13 +1552,13 @@ void Encoder::encode_frame(const float* interleaved_n, bool force_flush, bool ne
         bool ready = false;
         uint8_t first = 0, split[kLspSplitMax]{}, prediction = 0;
         float decoded[kLspCoefsMax]{}, history[kLspCoefsMax]{};
+        std::vector<float> envelope, normalized;
     };
     LspTrialResult lsp_results[kChannelsMax][3]{};
     auto trial = [&](const std::array<LspSearch, 2>& strategy, bool bark_search, bool ppc_search = false) {
         restore(lsp_hist_, prior_lsp);
         restore(bark_hist_, prior_bark);
         spec = original_spec;
-        std::vector<float> rec_lsps(target_lsps.size());
         for (int ch = 0; ch < channels_; ++ch) {
             auto& result = lsp_results[ch][static_cast<int>(strategy[ch])];
             if (!result.ready) {
@@ -1575,7 +1575,6 @@ void Encoder::encode_frame(const float* interleaved_n, bool force_flush, bool ne
                 lpc_hist_idx_[ch] = result.prediction;
                 std::memcpy(lsp_hist_[ch], result.history, sizeof(result.history));
             }
-            std::copy_n(result.decoded, mtab_->n_lsp, rec_lsps.data() + ch * kLspCoefsMax);
         }
         // Identical transmitted LSP parameters from identical prior histories
         // lead to the same reconstruction. Avoid repeating expensive VQ work.
@@ -1601,15 +1600,25 @@ void Encoder::encode_frame(const float* interleaved_n, bool force_flush, bool ne
         for (int ch = 0; ch < channels_; ch++) {
             float* sp = spec.data() + ch * n;
             float* env = all_env.data() + ch * n;
-            float lsp_cos[kLspCoefsMax];
-            std::memcpy(lsp_cos, rec_lsps.data() + static_cast<size_t>(ch) * kLspCoefsMax,
-                        sizeof(float) * static_cast<size_t>(mtab_->n_lsp));
-            dec_lpc_spectrum_inv(lsp_cos, ftype_, env);
-            for (int j = 1; j < sub; ++j) std::copy_n(env, block_size, env + j * block_size);
-            for (int i = 0; i < n; i++) {
-                const float e = std::max(env[static_cast<size_t>(i)], 1.0e-6f);
-                sp[i] /= e;
+            auto& result = lsp_results[ch][static_cast<int>(strategy[ch])];
+            // The envelope and pre-PPC normalization depend only on this
+            // frame's LSP result. Fill lazily after duplicate-trial rejection.
+            if (result.envelope.empty()) {
+                result.envelope.assign(n, 1.0f);
+                result.normalized.resize(n);
+                float lsp_cos[kLspCoefsMax];
+                std::copy_n(result.decoded, mtab_->n_lsp, lsp_cos);
+                dec_lpc_spectrum_inv(lsp_cos, ftype_, result.envelope.data());
+                for (int j = 1; j < sub; ++j)
+                    std::copy_n(result.envelope.data(), block_size,
+                                result.envelope.data() + j * block_size);
+                for (int i = 0; i < n; ++i) {
+                    const float e = std::max(result.envelope[i], 1.0e-6f);
+                    result.normalized[i] = original_spec[ch * n + i] / e;
+                }
             }
+            std::copy_n(result.envelope.data(), n, env);
+            std::copy_n(result.normalized.data(), n, sp);
         }
         std::memset(ppc_coeffs_, 0, sizeof(ppc_coeffs_));
         std::memset(p_coef_, 0, sizeof(p_coef_));

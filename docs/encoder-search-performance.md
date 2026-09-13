@@ -205,3 +205,24 @@ This optimization preserves the search space, arithmetic of each LSP search,
 quality settings and bitstream. Validation compares complete bytes with and
 without voice protection, including adaptive blocks and temporal ranking.
 Private reference material and its measurements are not distributed.
+
+
+## Reuse of LPC envelopes and normalized spectra
+
+The per-frame LSP result also holds its reconstructed LPC envelope and the
+input spectrum divided by that envelope, before PPC subtraction. These values
+are initialized lazily after duplicate-trial rejection. They depend only on
+the frame's original spectrum, block layout and channel/search LSP result;
+Bark/PPC/gain alternatives can therefore copy them without repeating envelope
+interpolation and per-bin division.
+
+Each trial receives private copies: PPC subtraction and later residual/gain
+updates cannot mutate the cached data. The envelope floor and division order
+are unchanged. All storage is local to the frame, including temporal winner
+regeneration, so block transitions and later predictor histories cannot reuse
+stale values. This adds bounded per-frame vectors for visited LSP strategies
+and removes the separate per-trial decoded-LSP vector.
+
+Validation uses complete-byte comparisons with the previous encoder for six
+synthetic configurations, including protected adaptive/temporal search. The
+optimization does not change quality weights, search width or transmitted bits.
