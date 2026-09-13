@@ -287,15 +287,15 @@ and masking weights. Synthetic pre-echo/error tradeoffs require listening
 validation; no general music-quality improvement is claimed.
 See [time-domain ranking](docs/time-domain-ranking.md).
 
-### Experimental PPC search
+### PPC search
 
 `--ppc-search` searches Long-frame PPC (periodic components) parameters using
 existing format fields. It proposes a period for each channel, jointly quantizes
 the shape and fits transmitted gains, then compares the complete reconstruction
 with the existing fixed-PPC candidate. Short and Medium frames have no PPC fields.
 
-The option is off by default (`--no-ppc-search`); the C++ setting is
-`Encoder::Config::ppc_search`. It can be combined with masking weights,
+PPC search is enabled by default on `encoder-quality`; disable it with
+`--no-ppc-search` or `Encoder::Config::ppc_search = false`. It can be combined with masking weights,
 adaptive blocks and temporal ranking. Encoding takes longer; bitrate and input
 buffering are unchanged. See [PPC search](docs/ppc-search.md) for scope and limits.
 

@@ -131,8 +131,8 @@ void usage() {
               << "  --block-mode MODE  blocks: long (default), short, medium, adaptive\n"
               << "  --threads N        auto (default) or 1..32 VQ workers\n"
               << "  --simd MODE        auto, scalar, sse41 or avx2\n"
-              << "  --ppc-search       experimental harmonic period/shape/gain search\n"
-              << "  --no-ppc-search    disable PPC search (default)\n"
+              << "  --ppc-search       harmonic period/shape/gain search (default)\n"
+              << "  --no-ppc-search    disable PPC search\n"
               << "  --temporal-search  experimental time-domain candidate ranking\n"
               << "  --no-temporal-search disable time-domain ranking (default)\n"
               << "  --vq-beam N        VQ breadth: auto (default), 4, 8, 16, 32\n"
@@ -290,8 +290,11 @@ int main(int argc, char** argv) try {
         return test_codec(true, true, true, twinvq::Encoder::BlockMode::Short);
     if (argc >= 2 && std::string(argv[1]) == "--test-codec-medium")
         return test_codec(true, true, true, twinvq::Encoder::BlockMode::Medium);
-    if (argc >= 2 && std::string(argv[1]) == "--test-codec")
-        return test_codec();
+    if (argc >= 2 && std::string(argv[1]) == "--test-codec") {
+        const twinvq::Encoder::Config defaults;
+        return test_codec(defaults.lsp_search, defaults.bark_search, defaults.psychoacoustic,
+                          defaults.block_mode, defaults.ppc_search, defaults.threads);
+    }
     if (argc >= 2 && std::string(argv[1]) == "--list-modes") {
         list_modes();
         return 0;

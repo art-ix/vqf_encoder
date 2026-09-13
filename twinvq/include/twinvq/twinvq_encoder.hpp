@@ -39,7 +39,7 @@ public:
         // Experimental time-domain ranking of existing frame candidates.
         bool temporal_search = false;
         // Experimental period, shape and gain search in Long frames.
-        bool ppc_search = false;
+        bool ppc_search = true;
         int threads = 0; // 0 = auto (up to 8 logical CPUs); explicit 1..32.
         Simd simd = Simd::Auto;
     };

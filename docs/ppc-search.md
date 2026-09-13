@@ -1,7 +1,9 @@
-# Optional Long-frame PPC search
+# Long-frame PPC search
 
-Enable `--ppc-search` or `Encoder::Config::ppc_search = true`.
-The default remains the existing fixed PPC indices. This implementation uses
+PPC search is enabled by default on `encoder-quality`.
+Use `--no-ppc-search` or `Encoder::Config::ppc_search = false` to restore
+the fixed-index behavior. `--ppc-search` explicitly enables the search.
+This implementation uses
 only the period, gain and shape fields already reserved in Long frames;
 it adds no bitstream fields, bitrate or lookahead. Short and Medium frames
 are unaffected by this search.
@@ -33,7 +35,7 @@ per channel is shape-quantized for each envelope. It is not an exhaustive joint
 period/shape/main-VQ optimum. The existing fixed-PPC candidate remains eligible
 from the same incoming history; this per-frame guard does not guarantee better
 whole-track error after histories diverge. Temporal ranking retains its existing
-5% spectral guard. Listening is needed before promoting the option to default.
+5% spectral guard. Listening validation is still needed across a broader range of material.
 
 ## Regression coverage
 

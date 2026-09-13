@@ -28,6 +28,15 @@ with tempfile.TemporaryDirectory(prefix='vqf-vq-options-') as directory:
                 subprocess.run([exe,'-b',str(bitrate),*flags,str(source),str(output)],
                                check=True,capture_output=True)
                 outputs[option] = output.read_bytes()
+            for flag in ('--ppc-search', '--no-ppc-search'):
+                subprocess.run([exe, '-b', str(bitrate), flag, str(source), str(output)],
+                               check=True, capture_output=True)
+                data = output.read_bytes()
+                assert len(data) == len(outputs[None]), 'PPC changed bit budget'
+                if flag == '--ppc-search':
+                    assert data == outputs[None], 'PPC is not enabled by default'
+                elif channels == 2:
+                    assert data != outputs[None], 'fixture did not exercise disabling PPC'
             for flag in ('--no-psychoacoustic', '--psychoacoustic'):
                 subprocess.run([exe, '-b', str(bitrate), flag, str(source), str(output)],
                                check=True, capture_output=True)
