@@ -12,7 +12,7 @@ LIB_SRCS = twinvq/src/vqf_file.cpp twinvq/src/twinvq_mdct.cpp \
            twinvq/src/twinvq_window_test.cpp twinvq/src/twinvq_psychoacoustic.cpp
 LIB_OBJS = $(patsubst twinvq/src/%.cpp,obj/%.o,$(LIB_SRCS)) obj/twinvq_tables.o
 DECODE_OBJS = obj/vqf_file.o obj/twinvq_mdct.o obj/twinvq_decoder.o obj/twinvq_tables.o
-ALL_OBJS = $(LIB_OBJS) obj/vqf_encode.o obj/vqf_decode.o
+ALL_OBJS = $(LIB_OBJS) obj/vqf_encode.o obj/vqf_decode.o obj/test_vq_state.o
 
 .PHONY: all test clean
 
@@ -63,3 +63,10 @@ clean:
 	rm -rf bin obj
 
 -include $(ALL_OBJS:.o=.d)
+
+# Optional reference/candidate bitstream invariant check.
+obj/test_vq_state.o: tools/test_vq_state.cpp | obj
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(DEPFLAGS) -c -o $@ $<
+
+bin/test_vq_state: $(LIB_OBJS) obj/test_vq_state.o | bin
+	$(CXX) $(CXXFLAGS) -o $@ $^

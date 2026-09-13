@@ -1834,11 +1834,70 @@ void Encoder::quantize_ppc(const float* spec, const float* lpc_env, const float*
     std::copy_n(best_gain, channels_, g_coef_);
 }
 
+void Encoder::polish_main_vectors(const float* original_spec, const float* perceptual,
+                                   const float* prior_lsp, const float* prior_bark) {
+    // Temporal ranking maintains a separate overlap-error state. Leave that
+    // experimental path unchanged until final polishing can update it too.
+    if (cfg_.temporal_search) return;
+    const int n = mtab_->size;
+    const auto& mode = mtab_->fmode[static_cast<int>(ftype_)];
+    const int sub = mode.sub, block = n / sub;
+    std::vector<float> scale(channels_ * n), offset(scale.size(), 0.0f);
+    std::vector<float> env(n), bark(n), ppc(channels_ * mtab_->ppc_shape_len);
+    float gains[kChannelsMax * kSubblocksMax];
+    dec_gain(ftype_, gains);
+    if (ftype_ == FrameType::Long) {
+        const int stride = (n_div_[3] + mtab_->ppc_shape_len * channels_ - 1) / n_div_[3];
+        dequant(ppc_coeffs_, ppc.data(), FrameType::Ppc, mtab_->ppc_shape_cb,
+                mtab_->ppc_shape_cb + stride * kPpcShapeCbSize, stride);
+    }
+    float saved_history[sizeof(bark_hist_) / sizeof(float)];
+    std::memcpy(saved_history, bark_hist_, sizeof(bark_hist_));
+    std::memcpy(bark_hist_, prior_bark, sizeof(bark_hist_));
+    for (int ch = 0; ch < channels_; ++ch) {
+        float history[kLspCoefsMax], lsp[kLspCoefsMax];
+        std::memcpy(history, prior_lsp + ch * kLspCoefsMax, mtab_->n_lsp * sizeof(float));
+        decode_lsp(lpc_idx1_[ch], lpc_idx2_[ch], lpc_hist_idx_[ch], lsp, history);
+        dec_lpc_spectrum_inv(lsp, ftype_, env.data());
+        for (int j = 1; j < sub; ++j) std::copy_n(env.data(), block, env.data() + j * block);
+        if (ftype_ == FrameType::Long)
+            decode_ppc(p_coef_[ch], g_coef_[ch], ppc.data() + ch * mtab_->ppc_shape_len,
+                       offset.data() + ch * n);
+        for (int j = 0; j < sub; ++j)
+            dec_bark_env(bark1_[ch][j], bark_use_hist_[ch][j], ch, bark.data() + j * block,
+                         gains[ch * sub + j], ftype_);
+        for (int i = 0; i < n; ++i) {
+            scale[ch * n + i] = env[i] * bark[i];
+            offset[ch * n + i] *= env[i];
+        }
+    }
+    std::memcpy(bark_hist_, saved_history, sizeof(bark_hist_));
+    std::vector<float> residual(scale.size()), weights(scale.size()), decoded(scale.size());
+    for (size_t i = 0; i < scale.size(); ++i) {
+        residual[i] = std::fabs(scale[i]) > 1.0e-20f ? (original_spec[i] - offset[i]) / scale[i] : 0.0f;
+        weights[i] = scale[i] * scale[i] * perceptual[i];
+    }
+    auto error = [&]() {
+        dequant(main_coeffs_, decoded.data(), ftype_, mode.cb0, mode.cb1, mode.cb_len_read);
+        double total = 0;
+        for (size_t i = 0; i < scale.size(); ++i) {
+            const double d = original_spec[i] - (static_cast<double>(scale[i]) * decoded[i] + offset[i]);
+            total += perceptual[i] * d * d;
+        }
+        return total;
+    };
+    uint8_t saved[sizeof(main_coeffs_)];
+    std::memcpy(saved, main_coeffs_, sizeof(saved));
+    const double before = error();
+    quantize_vectors(residual.data(), weights.data(), ftype_, true);
+    if (!(error() < before)) std::memcpy(main_coeffs_, saved, sizeof(saved));
+}
+
 void Encoder::quantize_main(const float* residual, const float* weights) {
     quantize_vectors(residual, weights, ftype_);
 }
 
-void Encoder::quantize_vectors(const float* residual, const float* weights, FrameType ftype) {
+void Encoder::quantize_vectors(const float* residual, const float* weights, FrameType ftype, bool balanced) {
     const int fi = static_cast<int>(ftype);
     const bool ppc = ftype == FrameType::Ppc;
     const int cb_len = ppc ? (n_div_[3] + mtab_->ppc_shape_len * channels_ - 1) / n_div_[3]
@@ -2022,6 +2081,49 @@ void Encoder::quantize_vectors(const float* residual, const float* weights, Fram
             }
             if (forward_error <= best_e) {
                 best0 = forward0; best1 = forward1; s0 = forward_s0; s1 = forward_s1;
+                best_e = forward_error;
+            }
+
+            if (balanced) {
+                // A pair sums two codewords: either component can be closer to
+                // half the target than to the full target used by the usual seeds.
+                // Nominate balanced components, but score their complete pairs
+                // against the original target and retain the existing winner.
+                for (int j = 0; j < length; ++j) rest[j] = 0.5f * target[j];
+                int balanced_index[4], balanced_sign[4];
+                select_beam(rest.data(), weight.data(), cb0, cb_len, length,
+                            n0, sign0_en, 4, balanced_index, balanced_sign);
+                for (int slot = 0; slot < 4; ++slot) {
+                    if (!balanced_sign[slot]) continue;
+                    for (int j = 0; j < length; ++j)
+                        rest[j] = target[j] - balanced_sign[slot] * cb0[balanced_index[slot] * cb_len + j];
+                    const auto match = scan_codebook(rest.data(), weight.data(), cb1,
+                        cb_len, length, n1, sign1_en, best_e);
+                    if (match.index >= 0) {
+                        best_e = match.error;
+                        best0 = balanced_index[slot]; s0 = balanced_sign[slot];
+                        best1 = match.index; s1 = match.sign;
+                    }
+                }
+                refine_pair();
+                // The selected frame may already contain a better pair from
+                // an earlier gain/envelope fit. Keep that seed as well rather
+                // than discarding it when the final fixed-target search starts.
+                const int old0 = sign0_en ? dst[2 * i] & 63 : dst[2 * i];
+                const int old1 = sign1_en ? dst[2 * i + 1] & 63 : dst[2 * i + 1];
+                const int old_s0 = sign0_en && (dst[2 * i] & 64) ? -1 : 1;
+                const int old_s1 = sign1_en && (dst[2 * i + 1] & 64) ? -1 : 1;
+                float old_error = 0;
+                for (int j = 0; j < length; ++j) {
+                    const float d = target[j] - old_s0 * cb0[old0 * cb_len + j]
+                                              - old_s1 * cb1[old1 * cb_len + j];
+                    old_error += weight[j] * d * d;
+                }
+                if (old_error <= best_e) {
+                    best0 = old0; best1 = old1; s0 = old_s0; s1 = old_s1;
+                    best_e = old_error;
+                }
+                refine_pair();
             }
 
             uint8_t c0 = static_cast<uint8_t>(best0);
@@ -2644,6 +2746,9 @@ void Encoder::encode_frame(const float* interleaved_n, bool force_flush, bool ne
         refine_long_ppc(original_spec.data(), perceptual.data(),
                         reinterpret_cast<const float*>(prior_lsp.data()),
                         reinterpret_cast<const float*>(prior_bark.data()));
+        polish_main_vectors(original_spec.data(), perceptual.data(),
+                            reinterpret_cast<const float*>(prior_lsp.data()),
+                            reinterpret_cast<const float*>(prior_bark.data()));
         write_frame_bits();
         frames_written_++;
         return;
@@ -2713,6 +2818,9 @@ void Encoder::encode_frame(const float* interleaved_n, bool force_flush, bool ne
         refine_long_ppc(original_spec.data(), perceptual.data(),
                         reinterpret_cast<const float*>(prior_lsp.data()),
                         reinterpret_cast<const float*>(prior_bark.data()));
+        polish_main_vectors(original_spec.data(), perceptual.data(),
+                            reinterpret_cast<const float*>(prior_lsp.data()),
+                            reinterpret_cast<const float*>(prior_bark.data()));
         write_frame_bits();
         frames_written_++;
         return;
@@ -2736,6 +2844,9 @@ void Encoder::encode_frame(const float* interleaved_n, bool force_flush, bool ne
     refine_long_ppc(original_spec.data(), perceptual.data(),
                     reinterpret_cast<const float*>(prior_lsp.data()),
                     reinterpret_cast<const float*>(prior_bark.data()));
+    polish_main_vectors(original_spec.data(), perceptual.data(),
+                        reinterpret_cast<const float*>(prior_lsp.data()),
+                        reinterpret_cast<const float*>(prior_bark.data()));
     write_frame_bits();
     frames_written_++;
 }

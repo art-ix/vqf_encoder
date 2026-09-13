@@ -730,3 +730,55 @@ Long is 0.404177 (baseline approximately 0.403687); attack energy ratio is
 Private source audio and music measurements remain outside Git. A lower
 frame objective does not guarantee improved listening quality, every spectral
 metric or every later frame, because the selected history affects the future.
+
+## Implementation update: final VQ search with balanced component seeds
+
+Baseline: `41744860d4b529663350046dca9592afc5c38495`.
+A two-codebook sum can have good components which are not individually close
+to the full residual. The final main-VQ pass additionally nominates four cb0
+components using half the target. The resulting pairs are evaluated against
+the full target, with the usual coordinate refinement. The pair already
+selected for each vector is also retained as a seed.
+
+This pass runs after frame selection and all Bark/PPC/gain refinement. It
+reconstructs the transmitted LPC, Bark, gains and PPC from the same frame-entry
+histories. Only main-VQ indices can change: windows, both gain levels, envelope
+indices, history flags and PPC fields remain fixed. The complete frame is
+restored unless synthesis-weighted MDCT error strictly decreases. Additional
+seeds are not used during earlier frame trials, so predictor trajectories are
+not changed by this polishing step. Normal VQ and PPC search retain their
+existing candidate sets. The experimental temporal-search path bypasses final
+polishing, because its separate overlap-error state must remain consistent.
+
+Independent FFmpeg decode, default adaptive 44.1 kHz stereo / 96 kbps,
+`tools/benchmark_gain.py`:
+
+| Signal | Before SNR (dB) | After SNR (dB) | Delta (dB) |
+| --- | ---: | ---: | ---: |
+| attacks | 12.979952 | 13.034809 | +0.054857 |
+| identical | 72.987465 | 72.996382 | +0.008917 |
+| antiphase | 72.987235 | 72.995916 | +0.008681 |
+| tones, harmonics, noise, fade, left-only | effectively unchanged | effectively unchanged | absolute delta < 0.001 |
+
+The fade differs by about -2.4e-8 dB. These are waveform diagnostics, not
+listening results, and gains do not imply improvements in every frequency
+band or log-spectral metric. The existing FFmpeg EOF warning remains.
+
+The optional bitstream invariant checker compares a reference and candidate
+file independently of the quantizer's scoring. It checks mode, bit budget,
+window schedule, and every non-main-VQ field across all frames:
+
+```sh
+make bin/test_vq_state
+bin/test_vq_state before.vqf after.vqf
+```
+
+All eight synthetic fixture pairs pass; a deliberately changed window bit is
+rejected. Encoded sizes and decoded durations are unchanged. Two synthetic
+combinations of temporal search, masking, PPC and broadband protection remain
+byte-identical to the baseline. Private music measurements remain outside Git.
+
+Validation: full `make test` passes on Linux, including all codec option
+suites, default/Short/Medium modes, adaptive pre-echo and chunking, worker/SIMD
+bitstream equivalence, voice protection, resampling, transforms and roundtrip.
+`tools/test_vq_options.py` also passes beam/default checks.
