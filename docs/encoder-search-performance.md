@@ -105,6 +105,21 @@ directions stay separate to preserve their floating-point subtraction order.
 All comparisons are exact; beam widths, candidates and strict tie handling
 remain unchanged. The same rule covers main VQ and PPC shape refinement.
 
+## Reusing reconstructed candidates
+
+Within a Long-frame trial, scoring and gain fitting share the reconstructed
+main codevectors. A local copy of the coefficient bytes identifies whether
+reconstruction is still valid; changing gains alone does not invalidate it.
+Restoring a different best candidate triggers reconstruction on the next use.
+The first gain fit also reads the vector already reconstructed by initial
+scoring, avoiding a separate allocation and dequantization. The cache cannot
+cross trial boundaries, where mode or search inputs could differ.
+
+PPC shape reconstruction runs once per trial before the channel loop, since
+it decodes the joint shape for all channels. Per-channel period/gain synthesis
+and subtraction retain their original order. Neither change alters scoring,
+quantization, histories or transmitted coefficients.
+
 ## Work chunk sizing experiment (not retained)
 
 An alternative grain size, `clamp(vector_count / (workers * 8), 2, 16)`, was

@@ -1558,14 +1558,17 @@ void Encoder::encode_frame(const float* interleaved_n, bool force_flush, bool ne
         std::memset(g_coef_, 0, sizeof(g_coef_));
         if (ppc_search && ftype_ == FrameType::Long)
             quantize_ppc(spec.data(), all_env.data(), perceptual.data());
+        std::vector<float> ppc_shape;
+        if (ftype_ == FrameType::Long) {
+            const int cb_len_p = (n_div_[3] + mtab_->ppc_shape_len * channels_ - 1) / n_div_[3];
+            ppc_shape.resize(static_cast<size_t>(mtab_->ppc_shape_len) * channels_);
+            dequant(ppc_coeffs_, ppc_shape.data(), FrameType::Ppc, mtab_->ppc_shape_cb,
+                    mtab_->ppc_shape_cb + cb_len_p * kPpcShapeCbSize, cb_len_p);
+        }
         for (int ch = 0; ch < channels_; ++ch) {
             float* sp = spec.data() + ch * n;
             const float* env = all_env.data() + ch * n;
             if (ftype_ == FrameType::Long) {
-                const int cb_len_p = (n_div_[3] + mtab_->ppc_shape_len * channels_ - 1) / n_div_[3];
-                std::vector<float> ppc_shape(static_cast<size_t>(mtab_->ppc_shape_len) * channels_, 0.0f);
-                dequant(ppc_coeffs_, ppc_shape.data(), FrameType::Ppc, mtab_->ppc_shape_cb,
-                        mtab_->ppc_shape_cb + cb_len_p * kPpcShapeCbSize, cb_len_p);
                 std::vector<float> ppc_add(static_cast<size_t>(n), 0.0f);
                 decode_ppc(p_coef_[ch], g_coef_[ch], ppc_shape.data() + ch * mtab_->ppc_shape_len, ppc_add.data());
                 for (int i = 0; i < n; i++) {
@@ -1705,9 +1708,17 @@ void Encoder::encode_frame(const float* interleaved_n, bool force_flush, bool ne
         double best_error = std::numeric_limits<double>::infinity();
         const auto& main_mode = mtab_->fmode[static_cast<int>(FrameType::Long)];
         std::vector<float> candidate(target.size());
-        auto retain_candidate = [&]() {
+        uint8_t decoded_coeffs[sizeof(main_coeffs_)];
+        bool decoded_valid = false;
+        auto decode_candidate = [&]() {
+            if (decoded_valid && !std::memcmp(decoded_coeffs, main_coeffs_, sizeof(main_coeffs_))) return;
             dequant(main_coeffs_, candidate.data(), FrameType::Long,
                     main_mode.cb0, main_mode.cb1, main_mode.cb_len_read);
+            std::memcpy(decoded_coeffs, main_coeffs_, sizeof(main_coeffs_));
+            decoded_valid = true;
+        };
+        auto retain_candidate = [&]() {
+            decode_candidate();
             float gains[kChannelsMax * kSubblocksMax];
             dec_gain(FrameType::Long, gains);
             double error = 0;
@@ -1733,9 +1744,8 @@ void Encoder::encode_frame(const float* interleaved_n, bool force_flush, bool ne
         retain_candidate();
         // Fit the transmitted channel gain to the actual selected vectors.
         // A nominal codebook RMS alone cannot predict the energy of their sum.
-        std::vector<float> reconstructed(residual.size());
-        const auto& mode = mtab_->fmode[static_cast<int>(FrameType::Long)];
-        dequant(main_coeffs_, reconstructed.data(), FrameType::Long, mode.cb0, mode.cb1, mode.cb_len_read);
+        // retain_candidate just reconstructed these exact codevectors.
+        const auto& reconstructed = candidate;
         float old_gain[kChannelsMax * kSubblocksMax];
         dec_gain(FrameType::Long, old_gain);
         for (int ch = 0; ch < channels_; ++ch) {
@@ -1767,8 +1777,7 @@ void Encoder::encode_frame(const float* interleaved_n, bool force_flush, bool ne
         // Optimize gain for the currently transmitted vectors. This is also
         // used after the last VQ pass, which may have changed those vectors.
         auto fit_candidate_gain = [&]() {
-            dequant(main_coeffs_, candidate.data(), FrameType::Long,
-                    main_mode.cb0, main_mode.cb1, main_mode.cb_len_read);
+            decode_candidate();
             bool changed = false;
             for (int ch = 0; ch < channels_; ++ch) {
                 double cross = 0, energy = 0;
