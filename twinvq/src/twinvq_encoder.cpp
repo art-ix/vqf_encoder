@@ -8,6 +8,7 @@
 
 #include "twinvq_simd.hpp"
 #include "twinvq_workers.hpp"
+#include "twinvq_gain_search.hpp"
 #include <thread>
 #include <algorithm>
 #include <array>
@@ -33,6 +34,24 @@ const std::array<float, 1 << kGainBits>& long_gain_table() {
         const float step = kAmpMax / static_cast<float>((1 << kGainBits) - 1);
         for (int q = 0; q < (1 << kGainBits); ++q)
             result[q] = (1.0f / 8192.0f) * mulawinv(step * 0.5f + step * q, kAmpMax, kMulawMu);
+        return result;
+    }();
+    return values;
+}
+
+const std::array<std::array<float, 1 << kSubGainBits>, 1 << kGainBits>& sub_gain_table() {
+    static const auto values = [] {
+        std::array<std::array<float, 1 << kSubGainBits>, 1 << kGainBits> result{};
+        const float step = kAmpMax / static_cast<float>((1 << kGainBits) - 1);
+        const float sub_step = kSubAmpMax / static_cast<float>((1 << kSubGainBits) - 1);
+        std::array<float, 1 << kSubGainBits> sub{};
+        for (int q = 0; q < (1 << kSubGainBits); ++q)
+            sub[q] = mulawinv(sub_step * 0.5f + sub_step * q, kSubAmpMax, kMulawMu);
+        for (int g = 0; g < (1 << kGainBits); ++g) {
+            const float global = (1.0f / (1 << 23)) * mulawinv(step * 0.5f + step * g, kAmpMax, kMulawMu);
+            for (int q = 0; q < (1 << kSubGainBits); ++q)
+                result[g][q] = global * sub[q];
+        }
         return result;
     }();
     return values;
@@ -536,19 +555,14 @@ void Encoder::dequant(const uint8_t* cb_bits, float* out, FrameType ftype,
 
 void Encoder::dec_gain(FrameType ftype, float* out) {
     const int sub = mtab_->fmode[static_cast<int>(ftype)].sub;
-    const float step = kAmpMax / static_cast<float>((1 << kGainBits) - 1);
-    const float sub_step = kSubAmpMax / static_cast<float>((1 << kSubGainBits) - 1);
     if (ftype == FrameType::Long) {
-        for (int i = 0; i < channels_; i++)
-            out[i] = (1.0f / (1 << 13)) * mulawinv(step * 0.5f + step * gain_bits_[i], kAmpMax, kMulawMu);
+        const auto& table = long_gain_table();
+        for (int i = 0; i < channels_; ++i) out[i] = table[gain_bits_[i]];
     } else {
-        for (int i = 0; i < channels_; i++) {
-            const float val = (1.0f / (1 << 23)) *
-                              mulawinv(step * 0.5f + step * gain_bits_[i], kAmpMax, kMulawMu);
-            for (int j = 0; j < sub; j++)
-                out[i * sub + j] = val * mulawinv(sub_step * 0.5f + sub_step * sub_gain_bits_[i * sub + j],
-                                                  kSubAmpMax, kMulawMu);
-        }
+        const auto& table = sub_gain_table();
+        for (int i = 0; i < channels_; ++i)
+            for (int j = 0; j < sub; ++j)
+                out[i * sub + j] = table[gain_bits_[i]][sub_gain_bits_[i * sub + j]];
     }
 }
 
@@ -2154,23 +2168,18 @@ void Encoder::quantize_vectors(const float* residual, const float* weights, Fram
 // each sub-gain is independent; all transmitted combinations are considered.
 void Encoder::fit_subblock_gains(int ch, const double* target, const double* weight) {
     const int sub = mtab_->fmode[static_cast<int>(ftype_)].sub;
-    const float step = kAmpMax / static_cast<float>((1 << kGainBits) - 1);
-    const float sub_step = kSubAmpMax / static_cast<float>((1 << kSubGainBits) - 1);
-    float sub_values[1 << kSubGainBits];
-    for (int q = 0; q < (1 << kSubGainBits); ++q)
-        sub_values[q] = mulawinv(sub_step * 0.5f + sub_step * q, kSubAmpMax, kMulawMu);
+    const auto& table = sub_gain_table();
+    int nearest[kSubblocksMax];
+    std::fill_n(nearest, sub, (1 << kSubGainBits) - 1);
     double best = std::numeric_limits<double>::infinity();
     for (int g = 0; g < (1 << kGainBits); ++g) {
-        const float global = (1.0f / (1 << 23)) * mulawinv(step * 0.5f + step * g, kAmpMax, kMulawMu);
         double error = 0;
         uint8_t selected[kSubblocksMax]{};
         for (int j = 0; j < sub; ++j) {
-            double distance = std::numeric_limits<double>::infinity();
-            for (int q = 0; q < (1 << kSubGainBits); ++q) {
-                const double d = global * sub_values[q] - target[j];
-                if (d * d < distance) { distance = d * d; selected[j] = static_cast<uint8_t>(q); }
-            }
-            error += weight[j] * distance;
+            const auto match = detail::nearest_gain(table[g].data(), 1 << kSubGainBits, target[j], nearest[j]);
+            nearest[j] = match.index;
+            selected[j] = static_cast<uint8_t>(match.index);
+            error += weight[j] * match.error;
         }
         if (error < best) {
             best = error;

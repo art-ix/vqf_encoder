@@ -273,3 +273,42 @@ are not included in this repository.
 
 See [optimization research](optimization-research.md) for primary-source
 references and the remaining proposed experiments.
+
+## Cached decoded gains and ordered sub-gain search
+
+Baseline: `e770cadffc1cacc456df3b7cb7989da1e3f11d68`.
+Short/Medium gain fitting previously recalculated the mu-law expansion and
+scanned all 32 sub-gains for each of 256 global gains. A shared, immutable
+32 KiB table now stores the exact float product for each transmitted pair.
+The encoder's gain decoder reuses that table; Long gain decoding reuses the
+existing 256-entry Long table. No decoder or bitstream format changes.
+
+For a fixed global gain, decoded sub-gains are ordered. Search starts at the
+previous global gain's selected sub-gain and walks neighboring values in both
+directions using exact squared-error comparisons. The hint usually moves
+little, avoiding a repeated binary or full search. Equal-error plateaus retain
+the lowest index, including
+plateaus from floating-point rounding on very large targets. All 256 global
+gains remain searched in their original order, with unchanged error summation
+and tie rules. The gain search has no effect on VQ beam width or quality effort.
+
+`--test-gains`, included in `make test`, checks 406528 hinted queries against an
+independent exhaustive scan, requiring identical indices and squared errors.
+Cases cover exact gains, midpoint ties and adjacent representable doubles,
+random targets, repeated gain values, extremes, infinities and NaN. Full-stream
+reference comparisons are necessary too: they check cached table rounding and
+its integration with both gain levels, Bark histories and VQ searches.
+
+Validation uses the same compiler and floating-point flags for the baseline
+and candidate:
+
+```sh
+make test
+python3 tools/test_encoder_equivalence.py bin/vqf_encode /path/to/baseline
+```
+
+All six synthetic full-stream equivalence cases passed, including temporal
+search, PPC, masking and voice protection. Speed depends on how often gain
+fitting runs: improvements with forced Short/Medium blocks do not imply the
+same overall speedup with adaptive block selection. Measure representative
+inputs with alternating baseline/candidate runs and report repeated timings.

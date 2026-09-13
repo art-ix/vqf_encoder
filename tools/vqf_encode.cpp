@@ -1,3 +1,4 @@
+#include "gain_tests.hpp"
 #include "twinvq/twinvq_encoder.hpp"
 #include "twinvq/twinvq_decoder.hpp"
 #include "twinvq/vqf_file.hpp"
@@ -301,6 +302,7 @@ int main(int argc, char** argv) try {
         list_modes();
         return 0;
     }
+    if (argc >= 2 && std::string(argv[1]) == "--test-gains") return test_gain_search();
     if (argc >= 2 && std::string(argv[1]) == "--test-mdct") {
         float e1 = 0, e2 = 0, e3 = 0, e4 = 0, e5 = 0;
         const bool a = twinvq::imdct_self_test(&e1);
