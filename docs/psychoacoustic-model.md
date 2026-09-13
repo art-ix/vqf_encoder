@@ -162,3 +162,26 @@ distance ranked the completed candidates. The refinement costs extra CPU
 and does not guarantee lower final PCM error: the LSP envelope is an
 intermediate objective and later frames also depend on its history.
 It remains tied to the opt-in protection mode and respects `--no-lsp-search`.
+
+
+### Frequency grid for voice envelope search
+
+With `--sibilant-protection`, the spectral LSP distance uses 128 points
+spaced uniformly in log(1 + frequency / 600 Hz), from zero through Nyquist.
+This gives low/mid-frequency envelope structure more evaluation points than
+the uniform-Hz grid. Both target and reconstructed envelopes use the same
+grid; the mean log ratio is still removed before scoring. Split refinement
+uses this objective too. This changes candidate selection, not LPC order,
+transmitted indices, bit allocation or decoder behavior. Without the option,
+the original uniform-Hz calculation is preserved.
+
+The grid is a heuristic for envelope resolution, not a model trained on
+Polish speech or a phoneme detector. Better envelope search may increase
+encoding time by producing different frame candidates that require full VQ
+search. General log-spectral error can still worsen; retain opt-in status
+pending listening validation on broader material.
+
+An additional experiment retained unrefined spectral frame candidates next
+to refined candidates. It was not retained: it did not establish a useful
+quality improvement. More candidates do not guarantee a better whole-track
+result because the selected frame changes predictor history for later frames.

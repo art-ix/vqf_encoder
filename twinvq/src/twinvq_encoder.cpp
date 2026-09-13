@@ -774,7 +774,16 @@ void Encoder::quantize_lsp(int ch, const float* target_lsp, float* rec_out, LspS
         float lsp_cos[kLspCoefsMax];
         for (int j = 0; j < order; ++j) lsp_cos[j] = 2.0f * std::cos(target_lsp[j]);
         for (int k = 0; k < spectral_bins; ++k) {
-            grid[k] = std::cos(kPi * (k + 0.5f) / spectral_bins);
+            const float position = (k + 0.5f) / spectral_bins;
+            if (cfg_.sibilant_protection) {
+                // Resolve narrow low/mid-frequency envelope structure more
+                // densely while retaining coverage through Nyquist.
+                const double nyquist = sample_rate_ * 0.5;
+                const double hz = 600.0 * std::expm1(position * std::log1p(nyquist / 600.0));
+                grid[k] = static_cast<float>(std::cos(kPi * hz / nyquist));
+            } else {
+                grid[k] = std::cos(kPi * (k + 0.5f) / spectral_bins);
+            }
             target_log[k] = std::log(std::clamp(
                 eval_lpc_spectrum(lsp_cos, grid[k], order), 1.0e-20f, 1.0e20f));
         }
