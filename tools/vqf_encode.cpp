@@ -128,6 +128,8 @@ void usage() {
               << "  --no-lsp-search     disable LSP search\n"
               << "  --psychoacoustic    experimental masking weights (default: off)\n"
               << "  --no-psychoacoustic disable masking weights\n"
+              << "  --sibilant-protection experimental broadband treble protection (default: off)\n"
+              << "  --no-sibilant-protection disable treble protection\n"
               << "  --block-mode MODE  blocks: long (default), short, medium, adaptive\n"
               << "  --threads N        auto (default) or 1..32 VQ workers\n"
               << "  --simd MODE        auto, scalar, sse41 or avx2\n"
@@ -313,7 +315,9 @@ int main(int argc, char** argv) try {
         std::cout << "window transitions " << (e ? "ok" : "FAIL") << " max abs err=" << e5 << "\n";
         const bool p = twinvq::psychoacoustic_self_test();
         std::cout << "psychoacoustic model " << (p ? "ok" : "FAIL") << "\n";
-        return (a && b && c && d && e && p) ? 0 : 1;
+        const bool s = twinvq::sibilant_self_test();
+        std::cout << "broadband protection " << (s ? "ok" : "FAIL") << "\n";
+        return (a && b && c && d && e && p && s) ? 0 : 1;
     }
     if (argc >= 2 && std::string(argv[1]) == "--test-roundtrip") {
         const double sec = (argc >= 3) ? std::atof(argv[2]) : 0.6;
@@ -356,6 +360,10 @@ int main(int argc, char** argv) try {
             cfg.bark_search = false;
         } else if (a == "--no-lsp-search") {
             cfg.lsp_search = false;
+        } else if (a == "--sibilant-protection") {
+            cfg.sibilant_protection = true;
+        } else if (a == "--no-sibilant-protection") {
+            cfg.sibilant_protection = false;
         } else if (a == "--psychoacoustic") {
             cfg.psychoacoustic = true;
         } else if (a == "--no-psychoacoustic") {

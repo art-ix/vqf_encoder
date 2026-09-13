@@ -92,6 +92,87 @@ void psychoacoustic_weights(const float* spectrum, int n, int channels,
     }
 }
 
+// Relative broadband detector, not a speech/phoneme recognizer. Equal M/S
+// weights avoid inventing interaural masking. The input weights may already
+// include the optional simultaneous-masking model.
+void sibilant_weights(const float* spectrum, int n, int channels,
+                      int sample_rate, float* weights) {
+    if (sample_rate < 16000) return;
+    const double upper = std::min(9000.0, sample_rate * 0.45);
+    double total = 0, high = 0, logs = 0;
+    int count = 0;
+    std::vector<double> power(n);
+    for (int i = 0; i < n; ++i) {
+        for (int ch = 0; ch < channels; ++ch) {
+            const double x = spectrum[ch * n + i];
+            power[i] += x * x;
+        }
+        total += power[i];
+        const double hz = (i + 0.5) * sample_rate / (2.0 * n);
+        if (hz >= 2500 && hz <= upper) { high += power[i]; ++count; }
+    }
+    if (!(total > 1.0e-60) || !std::isfinite(total) || !count || high <= 0) return;
+    const double floor = total / n * 1.0e-12;
+    for (int i = 0; i < n; ++i) {
+        const double hz = (i + 0.5) * sample_rate / (2.0 * n);
+        if (hz >= 2500 && hz <= upper) logs += std::log(std::max(power[i], floor));
+    }
+    const double flatness = std::exp(logs / count) / (high / count);
+    const double activity = std::clamp((high / total - 0.02) / 0.18, 0.0, 1.0) *
+                            std::clamp((flatness - 0.04) / 0.20, 0.0, 1.0);
+    for (int i = 0; i < n; ++i) {
+        const double hz = (i + 0.5) * sample_rate / (2.0 * n);
+        const double taper = std::clamp((hz - 2000.0) / 1000.0, 0.0, 1.0) *
+                             std::clamp((upper + 1000.0 - hz) / 2000.0, 0.0, 1.0);
+        const double voice_band = std::clamp((hz - 150.0) / 350.0, 0.0, 1.0) *
+                                  std::clamp((3500.0 - hz) / 1000.0, 0.0, 1.0);
+        const float emphasis = static_cast<float>(1.0 + activity * (2.0 * taper + 0.75 * voice_band));
+        for (int ch = 0; ch < channels; ++ch) weights[ch * n + i] *= emphasis;
+    }
+}
+
+bool sibilant_self_test() {
+    constexpr int n = 2048;
+    std::vector<float> spectrum(2 * n), weights(2 * n, 1), other(2 * n);
+    sibilant_weights(spectrum.data(), n, 2, 44100, weights.data());
+    for (float w : weights) if (w != 1) return false;
+    // Isolated tones, including treble, must not trigger broadband protection.
+    for (int bin : {40, 500}) {
+        spectrum[bin] = 1;
+        sibilant_weights(spectrum.data(), n, 2, 44100, weights.data());
+        for (float w : weights) if (w != 1) return false;
+        spectrum[bin] = 0;
+    }
+    for (int i = 0; i < n; ++i) {
+        const double hz = (i + 0.5) * 44100 / (2.0 * n);
+        spectrum[i] = hz >= 2500 && hz <= 9000 ? 1 : 0;
+        spectrum[n + i] = spectrum[i] * 0.5f;
+    }
+    sibilant_weights(spectrum.data(), n, 2, 44100, weights.data());
+    if (weights[400] <= 2 || weights[100] <= 1 || weights[0] != 1) return false;
+    for (int i = 0; i < n; ++i)
+        if (!std::isfinite(weights[i]) || weights[i] < 1 || weights[i] > 3.75f ||
+            weights[i] != weights[n + i]) return false;
+    for (float factor : {-1.0f, 1.0f / 65536.0f, 65536.0f}) {
+        auto scaled = spectrum;
+        for (float& x : scaled) x *= factor;
+        std::fill(other.begin(), other.end(), 1);
+        sibilant_weights(scaled.data(), n, 2, 44100, other.data());
+        for (int i = 0; i < 2 * n; ++i)
+            if (std::fabs(other[i] - weights[i]) > 1e-5f) return false;
+    }
+    // An ear swap negates S; existing weights must be multiplied, not replaced.
+    for (int i = n; i < 2 * n; ++i) spectrum[i] *= -1;
+    std::fill(other.begin(), other.end(), 0.5f);
+    sibilant_weights(spectrum.data(), n, 2, 44100, other.data());
+    for (int i = 0; i < 2 * n; ++i)
+        if (other[i] != weights[i] * 0.5f) return false;
+    std::fill(other.begin(), other.end(), 1);
+    sibilant_weights(spectrum.data(), n, 1, 8000, other.data());
+    for (float w : other) if (w != 1) return false;
+    return true;
+}
+
 bool psychoacoustic_self_test() {
     const int n = 2048;
     std::vector<float> spectrum(2 * n), weights(2 * n), other(2 * n);

@@ -34,6 +34,8 @@ public:
         int vq_beam = 0;
         // Experimental relative simultaneous-masking model; opt in for evaluation.
         bool psychoacoustic = false;
+        // Experimental protection of broadband high-frequency consonant energy.
+        bool sibilant_protection = false;
         // Experimental fixed or transient-adaptive blocks; Long remains default.
         BlockMode block_mode = BlockMode::Long;
         // Experimental time-domain ranking of existing frame candidates.

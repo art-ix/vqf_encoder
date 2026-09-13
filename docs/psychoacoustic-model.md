@@ -111,3 +111,37 @@ useful tradeoff; do not reintroduce this cap as a proven pre-echo improvement.
 An independent [time-domain candidate-ranking experiment](time-domain-ranking.md)
 is now available as `--temporal-search`. It does not reinstate the rejected
 threshold cap; it scores reconstructed error after IMDCT/window synthesis.
+
+
+## Experimental broadband voice protection
+
+`--sibilant-protection` enables a separate relative error-weighting heuristic;
+`--no-sibilant-protection` disables it. It is off by default, independently of
+`--psychoacoustic`. The public encoder Config field is `sibilant_protection`.
+The native component does not expose a new setting; the CLI does.
+
+Per MDCT subblock, the detector combines the energy fraction and spectral
+flatness between 2.5 kHz and min(9 kHz, 0.45 * sample rate). When broadband
+activity rises, a tapered treble emphasis and a gentler 150–3500 Hz guard
+multiply the existing error weights. The guard reduces competition against
+the middle voice band. Identical M/S factors preserve channel symmetry.
+The weighting participates in the existing Bark, PPC and main VQ searches;
+it does not add bits or change the decoder/bitstream syntax.
+
+This is not a speech or phoneme recognizer: cymbals and other broadband
+sounds can also trigger it, and voiced speech without treble activity may
+not trigger it. It is not a remedy for every vocal artifact. It can trade
+error in other bands for lower treble error, including worse overall log
+spectral distance. Listening validation is required before enabling it by
+default. No source-specific measurements or recordings are distributed.
+
+For an experimental, more expensive search at 80 or 96 kb/s:
+
+```sh
+vqf_encode -b 96 --vq-beam 32 --sibilant-protection input.wav output.vqf
+```
+
+Beam 32 is a separate search-quality/cost choice; the protection option also
+works with the automatic beam. Existing defaults remain unchanged. The
+`--test-mdct` checks include silence, tonal rejection, broadband activation,
+weight bounds, gain/polarity/ear symmetry and composition with prior weights.
