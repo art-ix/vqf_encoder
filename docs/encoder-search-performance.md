@@ -64,6 +64,21 @@ epsilon or approximate convergence threshold. Forward/reverse beam candidates
 and prefix refinement calls are still evaluated as before; only a redundant
 second pass is removed. This applies to both main VQ and PPC shape VQ.
 
+A vector now also remembers its most recently confirmed fixed point: both
+codebook indices, both signs and the exact incumbent error. If a later beam
+prefix calls refinement with that identical state, it reuses the convergence
+result. A refinement that reaches its pass limit while still improving is not
+marked converged. The record is local to one target/weight vector, and every
+beam candidate is still evaluated before deciding whether refinement is needed.
+
+## Work chunk sizing experiment (not retained)
+
+An alternative grain size, `clamp(vector_count / (workers * 8), 2, 16)`, was
+compared with the retained fixed grain of eight, using two and eight workers.
+Although output remained identical, the limited checks showed regressions with
+two workers and mixed gains elsewhere. The automatic grain formula is not
+present in the retained encoder; automatic worker-count selection is unchanged.
+
 ## Reusable VQ scratch buffers
 
 The three temporary float vectors used by each range are now thread-local.

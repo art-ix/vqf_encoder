@@ -1135,7 +1135,15 @@ void Encoder::quantize_vectors(const float* residual, const float* weights, Fram
             int beam_index[32], beam_sign[32];
             search_beam(target.data(), weight.data(), cb0, cb_len, length,
                         n0, sign0_en, beam_size, beam_index, beam_sign);
+            bool converged = false;
+            int settled0 = 0, settled1 = 0, settled_s0 = 0, settled_s1 = 0;
+            float settled_error = 0;
             auto refine_pair = [&]() {
+                // A later beam prefix may leave the same already-converged
+                // pair in place. Its coordinate searches need not run again.
+                if (converged && best0 == settled0 && best1 == settled1 &&
+                    s0 == settled_s0 && s1 == settled_s1 && best_e == settled_error) return;
+                converged = false;
                 for (int pass = 0; pass < 2; ++pass) {
                     const float initial_error = best_e;
                     for (int stage = 0; stage < 2; ++stage) {
@@ -1153,7 +1161,12 @@ void Encoder::quantize_vectors(const float* residual, const float* weights, Fram
                     }
                     // Strict improvements are the only state updates. If neither
                     // coordinate improved, another pass has identical inputs.
-                    if (best_e == initial_error) break;
+                    if (best_e == initial_error) {
+                        converged = true;
+                        settled0 = best0; settled1 = best1;
+                        settled_s0 = s0; settled_s1 = s1; settled_error = best_e;
+                        break;
+                    }
                 }
             };
             for (int slot = 0; slot < beam_size; ++slot) {
