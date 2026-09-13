@@ -35,6 +35,8 @@ After Bark/VQ keep-best, Long frames refit PPC to the leftover
 `original/env - bark * vq`. The three highest leftover-energy periods per
 channel (including the current period) are shape-quantized with locked
 periods. The previous PPC triple is restored unless weighted MDCT error falls.
+If the triple does change, one extra main-VQ pass and gain fit run on the
+new residual; the previous vectors are restored unless that error falls too.
 
 ## Limits
 

@@ -1629,6 +1629,73 @@ void Encoder::refine_long_ppc(const float* original_spec, const float* perceptua
     restore_bytes(ppc_coeffs_, best_ppc);
     restore_bytes(p_coef_, best_period);
     restore_bytes(g_coef_, best_pgain);
+    const bool ppc_changed =
+        std::memcmp(best_ppc.data(), saved_ppc.data(), best_ppc.size()) != 0 ||
+        std::memcmp(best_period.data(), saved_period.data(), best_period.size()) != 0 ||
+        std::memcmp(best_pgain.data(), saved_gain.data(), best_pgain.size()) != 0;
+    if (!ppc_changed) return;
+
+    const auto saved_main = snapshot_bytes(main_coeffs_);
+    const auto saved_gb = snapshot_bytes(gain_bits_);
+    const auto saved_bark_hist = snapshot_bytes(bark_hist_);
+
+    std::vector<float> ppc(static_cast<size_t>(channels_) * n, 0.0f);
+    {
+        float* shape = work_ppc_shape_.data();
+        dequant(ppc_coeffs_, shape, FrameType::Ppc, mtab_->ppc_shape_cb,
+                mtab_->ppc_shape_cb + cb_len_p * kPpcShapeCbSize, cb_len_p);
+        for (int ch = 0; ch < channels_; ++ch)
+            decode_ppc(p_coef_[ch], g_coef_[ch], shape + ch * mtab_->ppc_shape_len, ppc.data() + ch * n);
+    }
+
+    for (int ch = 0; ch < channels_; ++ch) {
+        for (int i = 0; i < n; ++i) {
+            const int k = ch * n + i;
+            const float e = std::max(env[k], 1.0e-6f);
+            const double x = static_cast<double>(original_spec[k]) / e - ppc[k];
+            const float b = bark[k];
+            work_residual_[k] = (std::fabs(b) > 1.0e-8f) ? static_cast<float>(x / b) : static_cast<float>(x);
+            const float scale = env[k] * b;
+            work_weights_[k] = scale * scale * perceptual[k];
+        }
+    }
+    quantize_main(work_residual_.data(), work_weights_.data());
+    dequant(main_coeffs_, vq.data(), FrameType::Long, mode.cb0, mode.cb1, mode.cb_len_read);
+
+    const auto& table = long_gain_table();
+    std::vector<float> st(static_cast<size_t>(channels_) * n);
+    for (int ch = 0; ch < channels_; ++ch) {
+        const float g = std::max(std::fabs(gtmp[ch]), 1.0e-12f);
+        for (int i = 0; i < n; ++i)
+            st[ch * n + i] = bark[ch * n + i] / g;
+        int selected = gain_bits_[ch];
+        double best = std::numeric_limits<double>::infinity();
+        for (int q = 0; q < (1 << kGainBits); ++q) {
+            const float ng = table[q];
+            double error = 0;
+            for (int i = 0; i < n; ++i) {
+                const int k = ch * n + i;
+                const double rec = env[k] * (static_cast<double>(st[k]) * ng * vq[k] + ppc[k]);
+                const double d = original_spec[k] - rec;
+                error += perceptual[k] * d * d;
+            }
+            if (error < best) {
+                best = error;
+                selected = q;
+            }
+        }
+        gain_bits_[ch] = static_cast<uint8_t>(selected);
+    }
+    std::memcpy(bark_hist_, prior_bark, sizeof(bark_hist_));
+    dec_gain(FrameType::Long, gtmp);
+    for (int ch = 0; ch < channels_; ++ch)
+        dec_bark_env(bark1_[ch][0], bark_use_hist_[ch][0], ch, bark.data() + ch * n, gtmp[ch],
+                     FrameType::Long);
+    dequant(main_coeffs_, vq.data(), FrameType::Long, mode.cb0, mode.cb1, mode.cb_len_read);
+    if (synth_error() < best_error) return;
+    restore_bytes(main_coeffs_, saved_main);
+    restore_bytes(gain_bits_, saved_gb);
+    restore_bytes(bark_hist_, saved_bark_hist);
 }
 
 std::vector<int> Encoder::ppc_positions(int period_coef) const {

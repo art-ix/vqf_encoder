@@ -642,3 +642,24 @@ Linux diagnostics versus the previous default, two-second 44.1 kHz stereo /
 `--test-codec` 44.1 kHz stereo / 96 kbps chirp was unchanged. Encode time on
 these clips rose by a few percent. These are waveform diagnostics, not
 listening results.
+
+
+## Implementation update: extra VQ after leftover PPC
+
+When leftover PPC search changes the period/shape/gain triple, Long frames
+now run one more main-VQ pass on the residual after the new PPC, then refit
+transmitted gain. The previous vectors and gains are restored unless weighted
+MDCT error falls. Frames whose PPC did not change skip this pass.
+
+Linux diagnostics versus leftover PPC without the extra VQ, two-second
+44.1 kHz stereo / 96 kbps clips:
+
+| Signal | Delta SNR (dB) |
+| --- | ---: |
+| tones, fade, identical, antiphase | 0.000 |
+| harmonics | +0.123 |
+| noise | +0.005 |
+| attacks, left-only | +0.000 |
+
+`--test-codec` 44.1 kHz stereo / 96 kbps chirp and the 0.5 s roundtrip SNR
+were unchanged. Encode time on these clips was within run-to-run noise.
