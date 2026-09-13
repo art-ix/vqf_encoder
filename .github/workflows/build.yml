@@ -10,7 +10,7 @@ permissions:
 
 env:
   # One requested prerelease: ordinary branch pushes do not publish releases.
-  QUALITY_RELEASE_TAG: ${{ github.event_name == 'push' && github.ref == 'refs/heads/encoder-quality' && github.event.head_commit.message == 'Release encoder-quality v1.2-encoder-quality.1' && 'v1.2-encoder-quality.1' || '' }}
+  QUALITY_RELEASE_TAG: ${{ github.event_name == 'push' && github.ref == 'refs/heads/encoder-quality' && github.event.head_commit.message == 'Release encoder-quality v1.2-encoder-quality.2' && 'v1.2-encoder-quality.2' || '' }}
   FOOBAR2000_SDK_URL: https://www.foobar2000.org/downloads/SDK-2025-03-07.7z
 
 jobs:
@@ -149,19 +149,30 @@ jobs:
         with:
           tag_name: ${{ env.QUALITY_RELEASE_TAG }}
           target_commitish: ${{ github.sha }}
-          name: Encoder quality preview 1.2
+          name: Encoder quality preview 1.2.2
           prerelease: true
           make_latest: false
           files: foo_enc_vqf-*-win-x64.zip
           fail_on_unmatched_files: true
           body: |
-            Test release built from the `encoder-quality` branch. Stable releases remain unchanged.
+            Test release built from the `encoder-quality` branch (`6748d43` plus this packaging commit).
+            Stable `v1.1` remains unchanged.
 
-            - Expanded LSP/Bark and vector-quantization search, with PPC enabled by default.
-            - Automatic worker count (up to eight), reusable workers, and dynamic VQ task distribution.
-            - Runtime scalar/SSE4.1/AVX2 selection; packed AVX2 searches evaluate eight candidates together.
-            - Reuse of scratch buffers, converged searches, and reconstructed candidates to reduce repeated work.
-            - Optional psychoacoustic weighting, adaptive blocks and temporal scoring remain opt-in.
+            Default encoder path (no extra flags):
+
+            - Adaptive Long/Short blocks.
+            - Log-frequency spectral LSP search.
+            - Bark envelope refit after the winning VQ, with keep-best (Long, Short and Medium).
+            - Long-frame PPC leftover refit after main VQ, with keep-best.
+            - Extra main-VQ pass when leftover PPC changes, with keep-best.
+            - PPC search still on by default.
+
+            Speed (byte-identical output): reused encoder scratch and cached per-mode tables.
+
+            Keep-best restores the previous frame unless weighted MDCT error falls, so
+            steady tones / identical / antiphase SNR did not drop on the diagnostic clips.
+
+            Still opt-in: psychoacoustic weighting (`--psychoacoustic`) and temporal ranking.
 
             The Windows x64 ZIP contains `vqf_encode.exe`, `vqf_decode.exe`,
             `foo_enc_vqf.dll`, installation instructions and the license.
