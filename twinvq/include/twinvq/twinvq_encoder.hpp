@@ -1,4 +1,5 @@
 #pragma once
+#include <memory>
 
 #include "twinvq_types.hpp"
 #include "vqf_file.hpp"
@@ -7,6 +8,7 @@
 #include <vector>
 
 namespace twinvq {
+namespace detail { class VqWorkers; }
 
 // Verify LPC -> LSP analysis against known stable predictor polynomials.
 bool lpc_analysis_self_test(float* max_abs_err);
@@ -100,6 +102,7 @@ private:
 
     const ModeTab* mtab_ = nullptr;
     Config cfg_{};
+    std::shared_ptr<detail::VqWorkers> vq_workers_;
     int channels_ = 0;
     int sample_rate_ = 0;
     int bitrate_kbps_ = 0;

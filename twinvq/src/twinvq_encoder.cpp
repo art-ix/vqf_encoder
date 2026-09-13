@@ -7,7 +7,7 @@
 #include "twinvq_tables.hpp"
 
 #include "twinvq_simd.hpp"
-#include <future>
+#include "twinvq_workers.hpp"
 #include <thread>
 #include <algorithm>
 #include <array>
@@ -1252,12 +1252,12 @@ void Encoder::quantize_vectors(const float* residual, const float* weights, Fram
     // PPC groups are small. Main-VQ tasks share only immutable inputs and
     // write disjoint coefficient pairs; all workers join before gain fitting.
     const int workers = ppc ? 1 : std::min(cfg_.threads, std::max(1, n_div_[fi] / 16));
-    std::vector<std::future<void>> pending;
-    for (int worker = 1; worker < workers; ++worker)
-        pending.push_back(std::async(std::launch::async, encode_range,
-            n_div_[fi] * worker / workers, n_div_[fi] * (worker + 1) / workers));
-    encode_range(0, n_div_[fi] / workers);
-    for (auto& task : pending) task.get();
+    if (workers == 1) encode_range(0, n_div_[fi]);
+    else {
+        if (!vq_workers_ || vq_workers_->capacity() < workers)
+            vq_workers_ = std::make_shared<detail::VqWorkers>(workers - 1);
+        vq_workers_->run(workers, n_div_[fi], encode_range);
+    }
 }
 
 // Joint global/sub-gain search in decoder units. For a fixed global gain,
@@ -1994,6 +1994,7 @@ void Encoder::flush() {
     const int bits = frames_written_ * frame_bits_;
     const int bytes = (bits + 7) >> 3;
     data_.resize(static_cast<size_t>(bytes), 0);
+    vq_workers_.reset(); // No idle workers after the completed stream.
 }
 
 VqfInfo Encoder::make_info() const {

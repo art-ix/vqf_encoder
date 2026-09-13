@@ -18,12 +18,19 @@ and writes exactly two independent coefficient bytes. Partition those groups
 into contiguous ranges; each worker owns its target/weight/residual buffers.
 Join all workers before dequantization, gain fitting or candidate selection.
 
-One range runs on the caller; up to `threads - 1` ranges use `std::async` with
-`std::launch::async`. Tasks are joined even when an exception unwinds the call.
-The effective worker count is bounded by at least 16 groups per worker; small
-PPC shape searches stay on one worker. There is no persistent thread pool or
-parallel frame encoding. The Encoder API still requires sequential feed/flush
-calls on a given instance. Separate Encoder instances can encode separate files.
+One range runs on the caller; the remaining ranges run in a reusable worker
+pool created lazily for the first parallel search. Its capacity grows only when
+a later block needs more workers; inactive workers sleep between batches.
+The effective worker count remains bounded by at least 16 groups per worker;
+small PPC shape searches stay on the caller. All batch work finishes before
+returning, including when a worker or caller throws. A failed batch does not
+poison subsequent batches. Flush releases this Encoder's pool reference, and
+pool destruction stops and joins its threads.
+
+Copying an Encoder preserves its state and may share an existing pool; the
+pool serializes concurrent batches from those copies. Independently constructed
+Encoders own independent pools. The Encoder API still requires sequential
+feed/flush calls on each instance; frames are not encoded in parallel.
 
 More threads cost CPU resources and may not improve small inputs or simultaneous
 multi-file encoding. Automatic selection uses `std::thread::hardware_concurrency()`, limited to eight
@@ -75,3 +82,9 @@ cores and workload; SIMD width alone does not predict an additional speedup.
 
 MSVC floating-point control follows [Microsoft's float_control documentation](https://learn.microsoft.com/en-us/cpp/preprocessor/float-control).
 The option test also compares explicit and implicit automatic worker selection.
+
+`--test-workers` checks changing worker counts, uneven/empty ranges, concurrent
+batch callers, exception propagation, reuse after failure and continued encoding after copying
+an Encoder and flushing one owner. It is run by the
+parallel options script, including in Windows CI. Encoder equivalence checks
+verify that the pool changes execution scheduling, not encoded decisions.

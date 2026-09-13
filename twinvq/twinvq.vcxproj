@@ -78,6 +78,7 @@
     <ClInclude Include="src\bitstream.hpp" />
     <ClInclude Include="src\twinvq_mdct.hpp" />
     <ClInclude Include="src\twinvq_simd.hpp" />
+    <ClInclude Include="src\twinvq_workers.hpp" />
     <ClInclude Include="src\twinvq_window.hpp" />
     <ClInclude Include="src\twinvq_psychoacoustic.hpp" />
     <ClInclude Include="src\twinvq_tables.hpp" />

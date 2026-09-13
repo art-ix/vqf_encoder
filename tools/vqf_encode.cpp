@@ -16,6 +16,7 @@
 
 #include "codec_tests.hpp"
 #include "simd_tests.hpp"
+#include "worker_tests.hpp"
 #include "resample.hpp"
 #include "resample_tests.hpp"
 
@@ -271,6 +272,8 @@ int main(int argc, char** argv) try {
         return test_codec(true, false);
     if (argc >= 2 && std::string(argv[1]) == "--test-codec-psychoacoustic")
         return test_codec(true, true, true);
+    if (argc >= 2 && std::string(argv[1]) == "--test-workers")
+        return test_workers();
     if (argc >= 2 && std::string(argv[1]) == "--test-simd")
         return test_simd();
     if (argc >= 2 && std::string(argv[1]) == "--test-codec-ppc-time")

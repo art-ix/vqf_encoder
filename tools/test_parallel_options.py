@@ -14,6 +14,7 @@ import wave
 
 exe = str(Path(sys.argv[1]).resolve())
 previous = str(Path(sys.argv[2]).resolve()) if len(sys.argv) > 2 else None
+subprocess.run([exe, '--test-workers'], check=True, capture_output=True)
 caps = subprocess.run([exe, '--test-simd'], check=True, capture_output=True, text=True).stdout
 backends = ['scalar'] + [name for name in ('sse41', 'avx2') if name + '=1' in caps]
 cases = [
