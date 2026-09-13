@@ -320,8 +320,14 @@ TWINVQ_TARGET("avx2") inline CodebookMatch avx2_candidates(const float* target,
     for (int first = 0; first < entries; first += 8) {
         const int lanes = std::min(8, entries - first);
         const float* values = packed + (first / 8) * book.stride * 8;
+        const __m256 group_errors = avx2_candidate_errors(target, weight, values,
+                                                          length, lanes, best.error);
+        const int lane_mask = (1 << lanes) - 1;
+        const int better_mask = _mm256_movemask_ps(_mm256_cmp_ps(
+            group_errors, _mm256_set1_ps(best.error), _CMP_LT_OQ)) & lane_mask;
+        if (!better_mask) continue;
         float error[8];
-        _mm256_storeu_ps(error, avx2_candidate_errors(target, weight, values, length, lanes, best.error));
+        _mm256_storeu_ps(error, group_errors);
         for (int lane = 0; lane < lanes; ++lane) {
             const int entry = first + lane;
             if (error[lane] < best.error)
