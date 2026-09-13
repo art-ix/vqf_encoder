@@ -16,7 +16,12 @@ error feedback must come from the selected preceding frame. Within main VQ,
 each group reads immutable targets, weights, codebooks and permutation data,
 and writes exactly two independent coefficient bytes. Partition those groups
 into contiguous chunks of up to eight vectors, claimed by available workers
-through an atomic cursor. Each chunk owns its target/weight/residual buffers.
+through an atomic cursor. Each executing thread reuses its own
+target/weight/residual buffers across chunks and frames. Storage grows only
+when a larger codebook vector is needed; active elements are overwritten before
+use, so it carries no quantizer history between Encoders. Worker scratch storage
+is released when its thread exits; caller scratch storage lasts until the caller
+thread exits.
 Join all workers before dequantization, gain fitting or candidate selection.
 
 The caller also claims chunks alongside a reusable worker pool created lazily

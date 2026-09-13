@@ -38,6 +38,16 @@ scalar scans, including signs, duplicate entries, unaligned input, partial SIMD
 groups, and finite cutoffs that may reject every candidate. The existing
 encoder equivalence script checks complete output against a pre-change binary.
 
+## Reusable VQ scratch buffers
+
+The three temporary float vectors used by each range are now thread-local.
+This avoids allocating, zero-initializing and freeing all three for every
+eight-vector chunk. Buffers grow when necessary and retain their size; only
+active elements participate in the search, and those are initialized before
+use. Different worker threads never share scratch buffers. Sequential calls
+from different Encoders on the same thread can reuse storage without retaining
+search decisions or depending on the previous vector length.
+
 ## Validation and reproduction
 
 Build a reference binary before the optimization and the candidate with the

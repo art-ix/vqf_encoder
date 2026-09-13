@@ -1096,7 +1096,12 @@ void Encoder::quantize_vectors(const float* residual, const float* weights, Fram
     const auto encode_range = [&](int begin, int end) {
         int pos = std::min(begin, static_cast<int>(length_change_[fi])) * length_[fi][0] +
                   std::max(0, begin - static_cast<int>(length_change_[fi])) * length_[fi][1];
-        std::vector<float> target(cb_len), weight(cb_len), rest(cb_len);
+        // Each calling/worker thread retains scratch storage across chunks and
+        // frames. All active elements are overwritten before they are read.
+        thread_local std::vector<float> target, weight, rest;
+        if (target.size() < static_cast<size_t>(cb_len)) target.resize(cb_len);
+        if (weight.size() < static_cast<size_t>(cb_len)) weight.resize(cb_len);
+        if (rest.size() < static_cast<size_t>(cb_len)) rest.resize(cb_len);
         for (int i = begin; i < end; i++) {
             const int length = length_[fi][i >= length_change_[fi]];
             const int second = (i >= bits_main_spec_change_[fi]);
