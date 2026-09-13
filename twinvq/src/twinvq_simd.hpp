@@ -335,12 +335,30 @@ TWINVQ_TARGET("avx2") inline CodebookMatch avx2_candidates(const float* target,
     CodebookMatch best{limit, -1, 1};
     const float* packed = signed_code ? book.signed_values.data() : book.positive.data();
     const int entries = count * (signed_code ? 2 : 1);
+    if ((entries & 7) == 0) {
+        for (int first = 0; first < entries; first += 8) {
+            const float* values = packed + (first / 8) * book.stride * 8;
+            const __m256 group_errors = avx2_candidate_errors8(
+                target, weight, values, length, best.error);
+            const int better_mask = _mm256_movemask_ps(_mm256_cmp_ps(
+                group_errors, _mm256_set1_ps(best.error), _CMP_LT_OQ));
+            if (!better_mask) continue;
+            float error[8];
+            _mm256_storeu_ps(error, group_errors);
+            for (int lane = 0; lane < 8; ++lane) {
+                const int entry = first + lane;
+                if (error[lane] < best.error)
+                    best = {error[lane], signed_code ? entry / 2 : entry,
+                             signed_code && entry % 2 ? -1 : 1};
+            }
+        }
+        return best;
+    }
     for (int first = 0; first < entries; first += 8) {
         const int lanes = std::min(8, entries - first);
         const float* values = packed + (first / 8) * book.stride * 8;
-        const __m256 group_errors = lanes == 8
-            ? avx2_candidate_errors8(target, weight, values, length, best.error)
-            : avx2_candidate_errors(target, weight, values, length, lanes, best.error);
+        const __m256 group_errors = avx2_candidate_errors(
+            target, weight, values, length, lanes, best.error);
         const int lane_mask = (1 << lanes) - 1;
         const int better_mask = _mm256_movemask_ps(_mm256_cmp_ps(
             group_errors, _mm256_set1_ps(best.error), _CMP_LT_OQ)) & lane_mask;
