@@ -128,7 +128,7 @@ void usage() {
               << "  --psychoacoustic    experimental masking weights (default: off)\n"
               << "  --no-psychoacoustic disable masking weights\n"
               << "  --block-mode MODE  blocks: long (default), short, medium, adaptive\n"
-              << "  --threads N        VQ workers, 1..32 (default 1)\n"
+              << "  --threads N        auto (default) or 1..32 VQ workers\n"
               << "  --simd MODE        auto, scalar, sse41 or avx2\n"
               << "  --ppc-search       experimental harmonic period/shape/gain search\n"
               << "  --no-ppc-search    disable PPC search (default)\n"
@@ -363,9 +363,12 @@ int main(int argc, char** argv) try {
             else throw std::invalid_argument("block mode must be long, short, medium or adaptive");
         } else if (a == "--threads") {
             const std::string value = need(a.c_str());
-            if (value.empty() || value.find_first_not_of("0123456789") != std::string::npos || value.size() > 2)
-                throw std::invalid_argument("threads must be between 1 and 32");
-            cfg.threads = std::stoi(value);
+            if (value == "auto") cfg.threads = 0;
+            else {
+                if (value.empty() || value.find_first_not_of("0123456789") != std::string::npos || value.size() > 2 || std::stoi(value) == 0)
+                    throw std::invalid_argument("threads must be auto or between 1 and 32");
+                cfg.threads = std::stoi(value);
+            }
         } else if (a == "--simd") {
             const std::string value = need(a.c_str());
             if (value == "auto") cfg.simd = twinvq::Encoder::Simd::Auto;
@@ -435,6 +438,7 @@ int main(int argc, char** argv) try {
     }
 
     twinvq::Encoder enc(cfg);
+    std::cerr << "VQ workers: up to " << enc.threads() << "\n";
     if (enc.lookahead_samples())
         std::cerr << "Adaptive lookahead: " << enc.lookahead_samples() << " samples ("
                   << 1000.0 * enc.lookahead_samples() / enc.sample_rate() << " ms)\n";

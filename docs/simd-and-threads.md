@@ -1,8 +1,8 @@
 # SIMD and parallel VQ search
 
-The encoder supports `--simd auto|scalar|sse41|avx2` and `--threads 1..32`.
+The encoder supports `--simd auto|scalar|sse41|avx2` and `--threads auto|1..32`.
 The C++ equivalents are `Encoder::Config::simd` (`Encoder::Simd`) and
-`Encoder::Config::threads`. Defaults are automatic SIMD and one worker.
+`Encoder::Config::threads`. Defaults are automatic SIMD and automatic workers (`threads = 0` in C++).
 For example:
 
 ```sh
@@ -26,8 +26,12 @@ parallel frame encoding. The Encoder API still requires sequential feed/flush
 calls on a given instance. Separate Encoder instances can encode separate files.
 
 More threads cost CPU resources and may not improve small inputs or simultaneous
-multi-file encoding. The option remains explicit rather than consuming every
-available CPU by default. The Makefile adds `-pthread`; Windows uses the C++
+multi-file encoding. Automatic selection uses `std::thread::hardware_concurrency()`, limited to eight
+logical CPUs (one if the count is unknown), and the group limit described above.
+Thus 2/4/8 reported logical CPUs allow up to 2/4/8 workers. This portable API
+reports hardware threads, not physical cores, and may not reflect every host CPU
+quota. Explicit `--threads N` overrides the automatic cap, while `--threads 1`
+disables parallel work. The CLI reports the resolved upper bound. The Makefile adds `-pthread`; Windows uses the C++
 standard library threading implementation, without an OpenMP dependency.
 
 ## SIMD work
@@ -35,7 +39,9 @@ standard library threading implementation, without an OpenMP dependency.
 SSE4.1 evaluates four weighted distance terms at a time; AVX2 evaluates eight.
 Both retain scalar accumulation in the original order and the original cutoff
 after every four terms. AVX2 can compute four extra terms before an early exit.
-No horizontal reduction, fused multiply-add, reassociation, wider beam changes
+MSVC locally overrides the library’s `/fp:fast` setting with precise semantics
+and disabled contraction for these kernels. No horizontal reduction, fused
+multiply-add, reassociation, wider beam changes
 or altered quantizer decisions are introduced. Loads never cross the vector
 length, including short tails and unaligned codebook addresses.
 
@@ -66,3 +72,6 @@ Equivalence checks concern the same platform with the default floating-point
 environment and ordinary precise build options. Do not use fast-math or global
 FMA contraction to infer equivalent output. Timings depend on CPU, available
 cores and workload; SIMD width alone does not predict an additional speedup.
+
+MSVC floating-point control follows [Microsoft's float_control documentation](https://learn.microsoft.com/en-us/cpp/preprocessor/float-control).
+The option test also compares explicit and implicit automatic worker selection.

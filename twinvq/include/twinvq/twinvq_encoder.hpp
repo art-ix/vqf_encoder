@@ -38,12 +38,13 @@ public:
         bool temporal_search = false;
         // Experimental period, shape and gain search in Long frames.
         bool ppc_search = false;
-        int threads = 1; // Parallel independent main-VQ groups; 1..32.
+        int threads = 0; // 0 = auto (up to 8 logical CPUs); explicit 1..32.
         Simd simd = Simd::Auto;
     };
 
     explicit Encoder(const Config& cfg);
 
+    int threads() const { return cfg_.threads; } // Resolved upper bound; small searches use fewer.
     int channels() const { return channels_; }
     int sample_rate() const { return sample_rate_; }
     int bitrate_kbps() const { return bitrate_kbps_; }

@@ -12,6 +12,13 @@
 #endif
 #endif
 
+#if defined(_MSC_VER)
+// The enclosing library uses /fp:fast. These ordered kernels must not inherit
+// reassociation or contraction; restore the caller's mode after the header.
+#pragma float_control(precise, on, push)
+#pragma fp_contract(off)
+#endif
+
 namespace twinvq::detail {
 using VectorError = float (*)(const float*, const float*, const int16_t*, int, int, float);
 
@@ -107,3 +114,7 @@ TWINVQ_TARGET("avx2") inline float avx2_error(const float* target, const float* 
 }
 #endif
 } // namespace twinvq::detail
+
+#if defined(_MSC_VER)
+#pragma float_control(pop)
+#endif

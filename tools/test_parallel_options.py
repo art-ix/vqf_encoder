@@ -39,9 +39,10 @@ with tempfile.TemporaryDirectory(prefix='vqf-parallel-') as directory:
         if previous:
             subprocess.run([previous, '-b', str(bitrate), *flags, str(source), str(output)], check=True, capture_output=True)
             reference = output.read_bytes()
-        for backend, threads in [(b, t) for b in backends for t in (1, 4)] + [('auto', 4)]:
+        for backend, threads in [(b, t) for b in backends for t in (1, 4)] + [('auto', 4), ('auto', 'auto'), ('auto', None)]:
             start = time.perf_counter()
-            subprocess.run([exe, '-b', str(bitrate), *flags, '--simd', backend, '--threads', str(threads),
+            worker_flags = [] if threads is None else ['--threads', str(threads)]
+            subprocess.run([exe, '-b', str(bitrate), *flags, '--simd', backend, *worker_flags,
                             str(source), str(output)], check=True, capture_output=True)
             data = output.read_bytes()
             if reference is None:

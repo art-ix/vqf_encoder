@@ -308,8 +308,9 @@ for the equivalence check and benchmark procedure.
 
 The encoder automatically selects AVX2, SSE4.1 or scalar VQ distance evaluation
 according to CPU/OS support. Use `--simd scalar`, `--simd sse41` or `--simd avx2`
-to choose explicitly. `--threads 4` evaluates independent main-VQ groups with
-up to four workers; the default is one worker. Frames remain sequential.
+to choose explicitly. Worker count is automatic by default: up to eight logical
+CPUs, reduced further for small main-VQ searches. `--threads 4` sets an explicit
+upper bound; `--threads 1` disables parallel search. Frames remain sequential.
 
 These options preserve the search and output format. See
 [SIMD and threading](docs/simd-and-threads.md) for usage, portability and tests.

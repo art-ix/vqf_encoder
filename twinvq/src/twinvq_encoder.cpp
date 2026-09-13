@@ -8,6 +8,7 @@
 
 #include "twinvq_simd.hpp"
 #include <future>
+#include <thread>
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -322,8 +323,12 @@ bool pick_encoder_mode(int sample_rate, int channels, int bitrate_kbps,
 }
 
 Encoder::Encoder(const Config& cfg) : cfg_(cfg) {
-    if (cfg.threads < 1 || cfg.threads > 32)
-        throw std::invalid_argument("threads must be between 1 and 32");
+    if (cfg.threads < 0 || cfg.threads > 32)
+        throw std::invalid_argument("threads must be auto (0) or between 1 and 32");
+    // Fine-grained searches stop scaling indefinitely. Bound automatic CPU
+    // consumption, then reduce further to the available vector groups below.
+    if (cfg_.threads == 0)
+        cfg_.threads = static_cast<int>(std::max(1u, std::min(8u, std::thread::hardware_concurrency())));
     if ((cfg.simd == Simd::Sse41 && !detail::has_sse41()) ||
         (cfg.simd == Simd::Avx2 && !detail::has_avx2()))
         throw std::invalid_argument("requested SIMD is not supported by this CPU/OS");
