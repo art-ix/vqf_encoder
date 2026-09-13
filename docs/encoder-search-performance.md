@@ -71,6 +71,21 @@ result. A refinement that reaches its pass limit while still improving is not
 marked converged. The record is local to one target/weight vector, and every
 beam candidate is still evaluated before deciding whether refinement is needed.
 
+## Reusing coordinate search bounds
+
+Each vector keeps one most recent scan record for each coordinate direction:
+the fixed codeword index, its sign and the error bound established by the scan.
+For identical fixed inputs, no candidate can beat that bound. If a later
+refinement uses the same codeword/sign with an equal or smaller incumbent
+error, it can skip rebuilding the residual and rescanning the codebook.
+A larger incumbent triggers a fresh scan, including after reverse-search
+initialization when needed. The records do not cross vector or frame boundaries.
+
+This is two small records, not a table of codebook-pair distances. The two
+directions stay separate to preserve their floating-point subtraction order.
+All comparisons are exact; beam widths, candidates and strict tie handling
+remain unchanged. The same rule covers main VQ and PPC shape refinement.
+
 ## Work chunk sizing experiment (not retained)
 
 An alternative grain size, `clamp(vector_count / (workers * 8), 2, 16)`, was

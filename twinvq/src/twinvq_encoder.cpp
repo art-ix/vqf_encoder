@@ -1135,6 +1135,8 @@ void Encoder::quantize_vectors(const float* residual, const float* weights, Fram
             int beam_index[32], beam_sign[32];
             search_beam(target.data(), weight.data(), cb0, cb_len, length,
                         n0, sign0_en, beam_size, beam_index, beam_sign);
+            int scanned_index[2]{}, scanned_sign[2]{};
+            float scanned_bound[2]{};
             bool converged = false;
             int settled0 = 0, settled1 = 0, settled_s0 = 0, settled_s1 = 0;
             float settled_error = 0;
@@ -1147,12 +1149,20 @@ void Encoder::quantize_vectors(const float* residual, const float* weights, Fram
                 for (int pass = 0; pass < 2; ++pass) {
                     const float initial_error = best_e;
                     for (int stage = 0; stage < 2; ++stage) {
-                        const int16_t* fixed = stage ? cb0 + best0 * cb_len : cb1 + best1 * cb_len;
+                        const int fixed_index = stage ? best0 : best1;
                         const int sign = stage ? s0 : s1;
+                        // The previous scan established that no candidate beats
+                        // this bound for the same fixed codeword and sign.
+                        if (scanned_sign[stage] == sign && scanned_index[stage] == fixed_index &&
+                            best_e <= scanned_bound[stage]) continue;
+                        const int16_t* fixed = (stage ? cb0 : cb1) + fixed_index * cb_len;
                         for (int j = 0; j < length; ++j) rest[j] = target[j] - sign * fixed[j];
                         const int16_t* cb = stage ? cb1 : cb0;
                         const auto match = search_codebook(rest.data(), weight.data(), cb,
                             cb_len, length, stage ? n1 : n0, stage ? sign1_en : sign0_en, best_e);
+                        scanned_index[stage] = fixed_index;
+                        scanned_sign[stage] = sign;
+                        scanned_bound[stage] = match.error;
                         if (match.index >= 0) {
                             best_e = match.error;
                             if (stage) { best1 = match.index; s1 = match.sign; }
