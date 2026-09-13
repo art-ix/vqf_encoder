@@ -1497,7 +1497,7 @@ void Encoder::refine_subblock_bark_vq(const float* original_spec, const float* p
 
 void Encoder::refine_long_ppc(const float* original_spec, const float* perceptual,
                               const float* prior_lsp, const float* prior_bark) {
-    if (ftype_ != FrameType::Long) return;
+    if (ftype_ != FrameType::Long || !cfg_.ppc_search) return;
     const int n = mtab_->size;
     const auto& mode = mtab_->fmode[static_cast<int>(FrameType::Long)];
     const int n_period = 1 << mtab_->ppc_period_bit;

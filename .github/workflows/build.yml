@@ -155,7 +155,7 @@ jobs:
           files: foo_enc_vqf-*-win-x64.zip
           fail_on_unmatched_files: true
           body: |
-            Test release built from the `encoder-quality` branch (`6748d43` plus this packaging commit).
+            Test release built from the `encoder-quality` branch.
             Stable `v1.1` remains unchanged.
 
             Default encoder path (no extra flags):
