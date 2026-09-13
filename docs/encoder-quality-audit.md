@@ -503,3 +503,39 @@ LSP and Bark remain enabled by default as requested. `--no-lsp-search` bypasses
 both angular and spectral search; `--no-bark-search` remains independent.
 Future work should consider lookahead or temporal reconstruction when choosing
 LSP histories, rather than promising non-regression from single-frame scoring.
+
+
+## Implementation update: Bark envelope refit after main VQ
+
+The Long-frame Bark target previously assumed a codebook RMS of 6000 before
+the vectors were known. After the frame winner is selected, the encoder now
+refits each Bark coefficient to the actual dequantized main-VQ vectors using
+weighted squared error in the original MDCT domain (LPC envelope times optional
+perceptual weights). History on/off is searched only when Bark search is
+enabled, so `--no-bark-search` still writes zero history flags.
+
+Three complete reconstructions are compared: the existing Bark/VQ/gain triple,
+the new Bark with the previous vectors and a refitted gain, and one extra VQ
+plus gain fit on the new envelope. The previous triple is restored unless the
+synthesis-weighted error falls. Short and Medium frames are unchanged. No
+bitstream fields, bit budget or decoder tables are added.
+
+Linux diagnostics versus the immediately preceding `encoder-quality` binary,
+two-second 44.1 kHz stereo / 96 kbps clips, independent FFmpeg decode:
+
+| Signal | Before SNR (dB) | After SNR (dB) | Delta (dB) |
+| --- | ---: | ---: | ---: |
+| tones | 29.253 | 29.260 | +0.007 |
+| harmonics | 30.334 | 30.357 | +0.023 |
+| attacks | 12.203 | 12.210 | +0.007 |
+| noise | 4.897 | 4.904 | +0.007 |
+| fade | 22.378 | 22.474 | +0.096 |
+| identical | 54.338 | 54.338 | +0.000 |
+| antiphase | 54.338 | 54.338 | +0.000 |
+| left-only | 48.834 | 48.891 | +0.056 |
+
+0.5-second 440/660 Hz roundtrip rose from 52.669 to 54.009 dB at zero lag.
+Encoded sizes and decoded durations were unchanged. These are waveform
+diagnostics, not listening results. Adaptive/short/psychoacoustic/PPC/VQ
+option suites and all 18 default codec modes passed, including the 16 kHz
+mono spectral LSP gate (41.76 dB) and silent-input peaks.
