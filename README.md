@@ -211,9 +211,10 @@ vqf_encode -b 96 input.wav output.vqf
 
 The encoder evaluates basic, angular and spectral LSP candidates, including
 mixed angular/spectral choices for mid and side channels, with both Bark
-strategies. Up to ten stereo (six mono) combinations are considered; identical
-LSP/Bark-strategy candidates skip repeated VQ work. The winning parameters and
-histories are committed together. This increases
+strategies. Spectral ranking uses a log-frequency envelope grid and a bounded
+split-codebook refinement. Up to ten stereo (six mono) combinations are
+considered; identical LSP/Bark-strategy candidates skip repeated VQ work. The
+winning parameters and histories are committed together. This increases
 encoding work; some signals still have known LSP regressions. The defaults are
 chosen for broader search, not a guarantee of universally better listening
 quality. See [the audit](docs/encoder-quality-audit.md) for measurements.

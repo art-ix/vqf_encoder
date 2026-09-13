@@ -149,37 +149,38 @@ weight bounds, gain/polarity/ear symmetry and composition with prior weights.
 
 ### Decoded LSP split refinement
 
-With broadband protection enabled, the spectral LSP candidate now performs
-one coordinate pass over its split-codebook indices. Each trial is decoded
-with a private copy of predictor history and scored using the existing
-mean-removed log-envelope distance. Only strict improvements are accepted;
-only the winning indices update the persistent history. Basic and angular
-frame candidates remain available to the final reconstruction-error search.
+The spectral LSP candidate performs one coordinate pass over its split-codebook
+indices. Each trial is decoded with a private copy of predictor history and
+scored using the existing mean-removed log-envelope distance. Only strict
+improvements are accepted; only the winning indices update the persistent
+history. Basic and angular frame candidates remain available to the final
+reconstruction-error search.
 
 This addresses a mismatch in the spectral search: split indices were
 previously proposed only by angular distance, even though decoded envelope
 distance ranked the completed candidates. The refinement costs extra CPU
 and does not guarantee lower final PCM error: the LSP envelope is an
 intermediate objective and later frames also depend on its history.
-It remains tied to the opt-in protection mode and respects `--no-lsp-search`.
+It follows default LSP search and respects `--no-lsp-search`. It is no
+longer tied to `--sibilant-protection`.
 
 
-### Frequency grid for voice envelope search
+### Frequency grid for envelope search
 
-With `--sibilant-protection`, the spectral LSP distance uses 128 points
-spaced uniformly in log(1 + frequency / 600 Hz), from zero through Nyquist.
-This gives low/mid-frequency envelope structure more evaluation points than
-the uniform-Hz grid. Both target and reconstructed envelopes use the same
-grid; the mean log ratio is still removed before scoring. Split refinement
-uses this objective too. This changes candidate selection, not LPC order,
-transmitted indices, bit allocation or decoder behavior. Without the option,
-the original uniform-Hz calculation is preserved.
+The spectral LSP distance uses 128 points spaced uniformly in
+log(1 + frequency / 600 Hz), from zero through Nyquist, with a modest extra
+weight between roughly 180 Hz and 4.3 kHz. This gives low/mid-frequency
+envelope structure more evaluation points than a uniform-Hz grid. Both target
+and reconstructed envelopes use the same grid; the mean log ratio is still
+removed before scoring. Split refinement uses this objective too. This changes
+candidate selection, not LPC order, transmitted indices, bit allocation or
+decoder behavior. `--no-lsp-search` restores the previous non-spectral path.
 
 The grid is a heuristic for envelope resolution, not a model trained on
 Polish speech or a phoneme detector. Better envelope search may increase
 encoding time by producing different frame candidates that require full VQ
-search. General log-spectral error can still worsen; retain opt-in status
-pending listening validation on broader material.
+search. `--sibilant-protection` still adds separate broadband treble weights
+on VQ/Bark; those remain opt-in because they can trade noise-band error.
 
 An additional experiment retained unrefined spectral frame candidates next
 to refined candidates. It was not retained: it did not establish a useful

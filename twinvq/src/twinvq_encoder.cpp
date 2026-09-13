@@ -775,21 +775,16 @@ void Encoder::quantize_lsp(int ch, const float* target_lsp, float* rec_out, LspS
         for (int j = 0; j < order; ++j) lsp_cos[j] = 2.0f * std::cos(target_lsp[j]);
         for (int k = 0; k < spectral_bins; ++k) {
             const float position = (k + 0.5f) / spectral_bins;
-            if (cfg_.sibilant_protection) {
-                // Resolve narrow low/mid-frequency envelope structure more
-                // densely while retaining coverage through Nyquist. Give the
-                // decoded-envelope objective a modest extra emphasis over the
-                // speech-formant range without ignoring the rest of the band.
-                const double nyquist = sample_rate_ * 0.5;
-                const double hz = 600.0 * std::expm1(position * std::log1p(nyquist / 600.0));
-                grid[k] = static_cast<float>(std::cos(kPi * hz / nyquist));
-                const double voice = std::clamp((hz - 180.0) / 420.0, 0.0, 1.0) *
-                                     std::clamp((4300.0 - hz) / 1300.0, 0.0, 1.0);
-                grid_weight[k] = static_cast<float>(1.0 + 0.75 * voice);
-            } else {
-                grid[k] = std::cos(kPi * (k + 0.5f) / spectral_bins);
-                grid_weight[k] = 1.0f;
-            }
+            // Log-frequency grid resolves low/mid envelope structure more
+            // densely. A modest extra weight over the speech-formant range
+            // does not drop coverage through Nyquist. Final frame selection
+            // still compares complete reconstructions against angular/basic.
+            const double nyquist = sample_rate_ * 0.5;
+            const double hz = 600.0 * std::expm1(position * std::log1p(nyquist / 600.0));
+            grid[k] = static_cast<float>(std::cos(kPi * hz / nyquist));
+            const double voice = std::clamp((hz - 180.0) / 420.0, 0.0, 1.0) *
+                                 std::clamp((4300.0 - hz) / 1300.0, 0.0, 1.0);
+            grid_weight[k] = static_cast<float>(1.0 + 0.75 * voice);
             target_log[k] = std::log(std::clamp(
                 eval_lpc_spectrum(lsp_cos, grid[k], order), 1.0e-20f, 1.0e20f));
         }
@@ -884,7 +879,7 @@ void Encoder::quantize_lsp(int ch, const float* target_lsp, float* rec_out, LspS
     // The split shortlist above uses angular distance. Refine the selected
     // spectral candidate with the actual decoded envelope objective, including
     // predictor history and stabilization, before committing its history.
-    if (cfg_.sibilant_protection && search == LspSearch::Spectral) {
+    if (search == LspSearch::Spectral) {
         // A later split choice can change stabilization and the gain-invariant
         // envelope mean enough to alter an earlier split's optimum. Do one
         // bounded extra coordinate sweep and stop immediately if it is stable.

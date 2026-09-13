@@ -539,3 +539,36 @@ Encoded sizes and decoded durations were unchanged. These are waveform
 diagnostics, not listening results. Adaptive/short/psychoacoustic/PPC/VQ
 option suites and all 18 default codec modes passed, including the 16 kHz
 mono spectral LSP gate (41.76 dB) and silent-input peaks.
+
+
+## Implementation update: default log-frequency spectral LSP search
+
+The log-frequency envelope grid and decoded-split refinement used by
+`--sibilant-protection` are now the spectral LSP path whenever LSP search is
+on. They no longer require the broadband treble weights. Those weights stay
+opt-in: they helped some voiced clips but lowered noise-band SNR by about
+0.46 dB on the synthetic noise fixture.
+
+Psychoacoustic weighting and adaptive Short frames were measured on the same
+clips and not enabled. Masking dropped tonal SNR by about 1.5 dB. Adaptive
+lowered whole-track attack SNR while still helping the dedicated pre-echo
+fixture; it remains experimental.
+
+Linux diagnostics versus the Bark-refit encoder, two-second 44.1 kHz stereo /
+96 kbps, independent FFmpeg decode:
+
+| Signal | Before SNR (dB) | After SNR (dB) | Delta (dB) |
+| --- | ---: | ---: | ---: |
+| tones | 29.260 | 32.067 | +2.807 |
+| harmonics | 30.357 | 30.576 | +0.219 |
+| attacks | 12.210 | 12.244 | +0.034 |
+| noise | 4.904 | 4.904 | +0.000 |
+| fade | 22.474 | 24.903 | +2.429 |
+| identical | 54.338 | 72.987 | +18.649 |
+| antiphase | 54.338 | 72.987 | +18.649 |
+| left-only | 48.891 | 57.988 | +9.097 |
+
+The 44.1 kHz stereo / 96 kbps chirp in `--test-codec` rose from 36.63 to
+43.11 dB. Encode time is roughly 2x on the harder clips because different
+spectral LSP indices reach full VQ. `--no-lsp-search` disables the new
+ranking. These are waveform diagnostics, not listening results.
