@@ -126,7 +126,9 @@ void sibilant_weights(const float* spectrum, int n, int channels,
                              std::clamp((upper + 1000.0 - hz) / 2000.0, 0.0, 1.0);
         const double voice_band = std::clamp((hz - 150.0) / 350.0, 0.0, 1.0) *
                                   std::clamp((3500.0 - hz) / 1000.0, 0.0, 1.0);
-        const float emphasis = static_cast<float>(1.0 + activity * (2.0 * taper + 0.75 * voice_band));
+        // Keep the maximum emphasis unchanged while moving a small amount of
+        // protection from the broad voice guard toward the fricative band.
+        const float emphasis = static_cast<float>(1.0 + activity * (2.10 * taper + 0.65 * voice_band));
         for (int ch = 0; ch < channels; ++ch) weights[ch * n + i] *= emphasis;
     }
 }
