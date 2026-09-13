@@ -164,6 +164,18 @@ private:
 
     std::vector<float> cos_tabs_[3];
     std::vector<float> tmp_;
+    std::vector<float> ppc_gain_table_;
+    float lsp_grid_[kLspSpectralBins]{};
+    float lsp_grid_weight_[kLspSpectralBins]{};
+    std::vector<float> work_residual_;
+    std::vector<float> work_weights_;
+    std::vector<float> work_env_;
+    std::vector<float> work_bark_;
+    std::vector<float> work_ppc_add_;
+    std::vector<float> work_ppc_shape_;
+    std::vector<float> work_vq_;
+    std::vector<float> work_target_;
+    std::vector<float> work_base_weights_;
     std::vector<uint8_t> data_;
     int frames_written_ = 0;
     int bit_count_ = 0;

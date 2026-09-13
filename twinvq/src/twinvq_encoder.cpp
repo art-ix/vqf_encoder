@@ -144,7 +144,7 @@ void autocorr(const float* x, int n, float* r, int order) {
 }
 
 void levinson(const float* r, int order, float* a) {
-    std::vector<float> tmp(static_cast<size_t>(order) + 1, 0.0f);
+    float tmp[kLspCoefsMax + 1]{};
     a[0] = 1.0f;
     for (int i = 1; i <= order; i++)
         a[i] = 0.0f;
@@ -169,8 +169,8 @@ void levinson(const float* r, int order, float* a) {
 // Convert LPC (a[0]=1..a[order]) to LSPs in radians (0, pi).
 void lpc_to_lsp(const float* a, int order, float* lsp) {
     const int half = order / 2;
-    std::vector<double> p(static_cast<size_t>(half) + 1, 0.0);
-    std::vector<double> q(static_cast<size_t>(half) + 1, 0.0);
+    double p[kLspCoefsMax / 2 + 1]{};
+    double q[kLspCoefsMax / 2 + 1]{};
     p[0] = q[0] = 1.0f;
     for (int i = 1; i <= half; i++) {
         p[static_cast<size_t>(i)] = a[i] + a[order + 1 - i] - p[static_cast<size_t>(i - 1)];
@@ -179,17 +179,17 @@ void lpc_to_lsp(const float* a, int order, float* lsp) {
     // The symmetric LPC polynomials are ordered from cos(half*w) down
     // to the constant term. Clenshaw expects the opposite order, and the
     // unpaired constant coefficient has half the weight.
-    std::reverse(p.begin(), p.end());
-    std::reverse(q.begin(), q.end());
+    std::reverse(p, p + half + 1);
+    std::reverse(q, q + half + 1);
     p[0] *= 0.5;
     q[0] *= 0.5;
     constexpr int ngrid = 1024;
     int found = 0;
     double prev_x = 1.0;
-    double prev = cheb_poly(p.data(), half, prev_x);
+    double prev = cheb_poly(p, half, prev_x);
     for (int g = 1; g <= ngrid && found < order; g++) {
         const double x = std::cos(3.14159265358979323846 * g / ngrid);
-        const double* poly = (found & 1) ? q.data() : p.data();
+        const double* poly = (found & 1) ? q : p;
         double value = cheb_poly(poly, half, x);
         // Stable LPC roots alternate between P and Q. Recheck the same
         // interval after each root so close pairs cannot be skipped.
@@ -207,7 +207,7 @@ void lpc_to_lsp(const float* a, int order, float* lsp) {
             }
             prev_x = 0.5 * (a0 + b0);
             lsp[found++] = static_cast<float>(std::acos(std::clamp(prev_x, -1.0, 1.0)));
-            poly = (found & 1) ? q.data() : p.data();
+            poly = (found & 1) ? q : p;
             prev = cheb_poly(poly, half, prev_x);
             value = cheb_poly(poly, half, x);
         }
@@ -360,6 +360,38 @@ Encoder::Encoder(const Config& cfg) : cfg_(cfg) {
     for (int i = 0; i < mtab_->size * 2; ++i)
         analysis_window_[i] = std::sin((i + 0.5f) * (kPi / (2.0f * mtab_->size)));
     tmp_.assign(static_cast<size_t>(mtab_->size) * 4 + 4096, 0.0f);
+    const int n = mtab_->size;
+    const int cn = channels_ * n;
+    work_residual_.resize(static_cast<size_t>(cn));
+    work_weights_.resize(static_cast<size_t>(cn));
+    work_env_.resize(static_cast<size_t>(cn));
+    work_bark_.resize(static_cast<size_t>(cn));
+    work_vq_.resize(static_cast<size_t>(cn));
+    work_target_.resize(static_cast<size_t>(cn));
+    work_base_weights_.resize(static_cast<size_t>(cn));
+    work_ppc_add_.assign(static_cast<size_t>(n), 0.0f);
+    work_ppc_shape_.resize(static_cast<size_t>(kPpcShapeLenMax) * kChannelsMax);
+    ppc_gain_table_.resize(static_cast<size_t>(1 << mtab_->pgain_bit));
+    {
+        const float step = 25000.0f / static_cast<float>((1 << mtab_->pgain_bit) - 1);
+        for (int q = 0; q < static_cast<int>(ppc_gain_table_.size()); ++q)
+            ppc_gain_table_[q] = (1.0f / 8192.0f) *
+                                 mulawinv(step * static_cast<float>(q) + step / 2.0f, 25000.0f, kPgainMu);
+    }
+    {
+        // Log-frequency envelope grid for spectral LSP ranking. Independent of
+        // the frame target; recomputing it per candidate only repeated this.
+        const double nyquist = sample_rate_ * 0.5;
+        const double log1p_nyquist = std::log1p(nyquist / 600.0);
+        for (int k = 0; k < kLspSpectralBins; ++k) {
+            const float position = (k + 0.5f) / kLspSpectralBins;
+            const double hz = 600.0 * std::expm1(position * log1p_nyquist);
+            lsp_grid_[k] = static_cast<float>(std::cos(kPi * hz / nyquist));
+            const double voice = std::clamp((hz - 180.0) / 420.0, 0.0, 1.0) *
+                                 std::clamp((4300.0 - hz) / 1300.0, 0.0, 1.0);
+            lsp_grid_weight_[k] = static_cast<float>(1.0 + 0.75 * voice);
+        }
+    }
 
     for (int i = 0; i < 3; i++) {
         const int m = 4 * mtab_->size / mtab_->fmode[i].sub;
@@ -705,13 +737,15 @@ void Encoder::write_frame_bits() {
 void Encoder::analyze_lpc(const float* time_2n, float* lpc, float* lsp) {
     const int n = mtab_->size;
     const int order = mtab_->n_lsp;
-    std::vector<float> win(static_cast<size_t>(n) * 2);
-    for (int i = 0; i < n * 2; i++) {
-        win[static_cast<size_t>(i)] = time_2n[i] * analysis_window_[i];
+    float* win = tmp_.data();
+    // Long/Long MDCT already left the sine-windowed 2N buffer in tmp_.
+    if (window_type_ != 0 || next_window_type_ != 0) {
+        for (int i = 0; i < n * 2; i++)
+            win[i] = time_2n[i] * analysis_window_[i];
     }
-    std::vector<float> r(static_cast<size_t>(order) + 1);
-    autocorr(win.data(), n * 2, r.data(), order);
-    levinson(r.data(), order, lpc);
+    float r[kLspCoefsMax + 1];
+    autocorr(win, n * 2, r, order);
+    levinson(r, order, lpc);
     lpc_to_lsp(lpc, order, lsp);
 }
 
@@ -740,9 +774,9 @@ void Encoder::quantize_lsp(int ch, const float* target_lsp, float* rec_out, LspS
     }
     lpc_idx1_[ch] = static_cast<uint8_t>(best1);
 
-    std::vector<float> residual(static_cast<size_t>(order));
+    float residual[kLspCoefsMax];
     for (int j = 0; j < order; j++)
-        residual[static_cast<size_t>(j)] = target_lsp[j] - cb[best1 * order + j];
+        residual[j] = target_lsp[j] - cb[best1 * order + j];
 
     int j0 = 0;
     for (int s = 0; s < mtab_->lsp_split; s++) {
@@ -752,7 +786,7 @@ void Encoder::quantize_lsp(int ch, const float* target_lsp, float* rec_out, LspS
         for (int i = 0; i < n2; i++) {
             float e = 0;
             for (int j = j0; j < chunk_end; j++) {
-                const float d = residual[static_cast<size_t>(j)] - cb2[i * order + j];
+                const float d = residual[j] - cb2[i * order + j];
                 e += d * d;
             }
             if (e < best_e) {
@@ -768,23 +802,14 @@ void Encoder::quantize_lsp(int ch, const float* target_lsp, float* rec_out, LspS
     // Remove the mean log ratio because transmitted gain handles overall level.
     // Keep angular search as another full-frame candidate rather than assuming
     // that a smaller envelope distance guarantees better quantized audio.
-    constexpr int spectral_bins = 128;
-    float target_log[spectral_bins]{}, grid[spectral_bins]{}, grid_weight[spectral_bins]{};
+    constexpr int spectral_bins = kLspSpectralBins;
+    const float* grid = lsp_grid_;
+    const float* grid_weight = lsp_grid_weight_;
+    float target_log[spectral_bins]{};
     if (search == LspSearch::Spectral) {
         float lsp_cos[kLspCoefsMax];
         for (int j = 0; j < order; ++j) lsp_cos[j] = 2.0f * std::cos(target_lsp[j]);
         for (int k = 0; k < spectral_bins; ++k) {
-            const float position = (k + 0.5f) / spectral_bins;
-            // Log-frequency grid resolves low/mid envelope structure more
-            // densely. A modest extra weight over the speech-formant range
-            // does not drop coverage through Nyquist. Final frame selection
-            // still compares complete reconstructions against angular/basic.
-            const double nyquist = sample_rate_ * 0.5;
-            const double hz = 600.0 * std::expm1(position * std::log1p(nyquist / 600.0));
-            grid[k] = static_cast<float>(std::cos(kPi * hz / nyquist));
-            const double voice = std::clamp((hz - 180.0) / 420.0, 0.0, 1.0) *
-                                 std::clamp((4300.0 - hz) / 1300.0, 0.0, 1.0);
-            grid_weight[k] = static_cast<float>(1.0 + 0.75 * voice);
             target_log[k] = std::log(std::clamp(
                 eval_lpc_spectrum(lsp_cos, grid[k], order), 1.0e-20f, 1.0e20f));
         }
@@ -937,8 +962,8 @@ void Encoder::quantize_gain_bark(int ch, const float* spec, int block_size,
     const int fw_cb_len = mtab_->fmode[fi].bark_env_size / bark_n_coef;
     const int n_bit = mtab_->fmode[fi].bark_n_bit;
     const int n_ent = 1 << n_bit;
-    std::vector<float> band(static_cast<size_t>(mtab_->fmode[fi].bark_env_size), 0.0f);
-    std::vector<double> band_weight(band.size(), 0.0);
+    float band[kBarkEnvMax]{};
+    double band_weight[kBarkEnvMax]{};
     int pos = 0;
     int idx = 0;
     for (int i = 0; i < fw_cb_len; i++) {
@@ -953,7 +978,7 @@ void Encoder::quantize_gain_bark(int ch, const float* spec, int block_size,
             const float st = (w > 0 && std::fabs(gain) > 1.0e-12f)
                                  ? static_cast<float>(std::sqrt(s / w)) / (gain * kTargetResidRms)
                                  : 1.0f;
-            band[static_cast<size_t>(idx)] = st - 1.0f;
+            band[idx] = st - 1.0f;
             if (search)
                 for (int k = 0; k < w && pos + k < block_size; ++k)
                     band_weight[idx] += static_cast<double>(lpc_env[pos+k]) * lpc_env[pos+k] * perceptual[pos+k];
@@ -1525,13 +1550,14 @@ void Encoder::refine_long_ppc(const float* original_spec, const float* perceptua
     }
 
     auto synth_error = [&]() {
-        std::vector<float> shape(static_cast<size_t>(mtab_->ppc_shape_len) * channels_);
-        dequant(ppc_coeffs_, shape.data(), FrameType::Ppc, mtab_->ppc_shape_cb,
+        float* shape = work_ppc_shape_.data();
+        dequant(ppc_coeffs_, shape, FrameType::Ppc, mtab_->ppc_shape_cb,
                 mtab_->ppc_shape_cb + cb_len_p * kPpcShapeCbSize, cb_len_p);
         double error = 0;
         for (int ch = 0; ch < channels_; ++ch) {
-            std::vector<float> ppc(n, 0.0f);
-            decode_ppc(p_coef_[ch], g_coef_[ch], shape.data() + ch * mtab_->ppc_shape_len, ppc.data());
+            float* ppc = work_ppc_add_.data();
+            std::fill_n(ppc, n, 0.0f);
+            decode_ppc(p_coef_[ch], g_coef_[ch], shape + ch * mtab_->ppc_shape_len, ppc);
             for (int i = 0; i < n; ++i) {
                 const int k = ch * n + i;
                 const double rec = env[k] * (static_cast<double>(bark[k]) * vq[k] + ppc[i]);
@@ -1640,10 +1666,8 @@ void Encoder::quantize_ppc(const float* spec, const float* lpc_env, const float*
         for (int p = 0; p < (1 << mtab_->ppc_period_bit); ++p)
             ppc_position_cache_.push_back(ppc_positions(p));
     }
-    const float step = 25000.0f / static_cast<float>((1 << mtab_->pgain_bit) - 1);
-    std::vector<float> gains(1 << mtab_->pgain_bit);
-    for (int q = 0; q < static_cast<int>(gains.size()); ++q)
-        gains[q] = (1.0f / 8192.0f) * mulawinv(step * q + step / 2.0f, 25000.0f, kPgainMu);
+    const float* gains = ppc_gain_table_.data();
+    const int n_gain = static_cast<int>(ppc_gain_table_.size());
     // Rank every representable period by reconstructable weighted energy.
     // This is a period proposal; full-frame VQ decides whether it is useful.
     for (int ch = 0; ch < channels_; ++ch) {
@@ -1665,11 +1689,13 @@ void Encoder::quantize_ppc(const float* spec, const float* lpc_env, const float*
         }
         const double target = std::sqrt(energy / len) / kTargetResidRms;
         g_coef_[ch] = 0;
-        for (int q = 1; q < static_cast<int>(gains.size()); ++q)
+        for (int q = 1; q < n_gain; ++q)
             if (std::fabs(gains[q] - target) < std::fabs(gains[g_coef_[ch]] - target)) g_coef_[ch] = q;
     }
     const int cb_len = (n_div_[3] + len * channels_ - 1) / n_div_[3];
-    std::vector<float> target(len * channels_), weights(target.size()), shape(target.size());
+    float target[kChannelsMax * kPpcShapeLenMax];
+    float weights[kChannelsMax * kPpcShapeLenMax];
+    float shape[kChannelsMax * kPpcShapeLenMax];
     uint8_t best_shape[sizeof(ppc_coeffs_)]{};
     int best_gain[kChannelsMax]{};
     double best_error = std::numeric_limits<double>::infinity();
@@ -1684,8 +1710,8 @@ void Encoder::quantize_ppc(const float* spec, const float* lpc_env, const float*
             weights[ch * len + j] = scale * scale * perceptual[i];
         }
         // PPC permutations can mix channels: quantize the entire shape jointly.
-        quantize_vectors(target.data(), weights.data(), FrameType::Ppc);
-        dequant(ppc_coeffs_, shape.data(), FrameType::Ppc, mtab_->ppc_shape_cb,
+        quantize_vectors(target, weights, FrameType::Ppc);
+        dequant(ppc_coeffs_, shape, FrameType::Ppc, mtab_->ppc_shape_cb,
                 mtab_->ppc_shape_cb + cb_len * kPpcShapeCbSize, cb_len);
         double error = 0;
         for (int ch = 0; ch < channels_; ++ch) {
@@ -1698,7 +1724,7 @@ void Encoder::quantize_ppc(const float* spec, const float* lpc_env, const float*
             }
             const double optimum = energy > 1.0e-20 ? std::max(0.0, cross / energy) : 0;
             g_coef_[ch] = 0;
-            for (int q = 1; q < static_cast<int>(gains.size()); ++q)
+            for (int q = 1; q < n_gain; ++q)
                 if (std::fabs(gains[q] - optimum) < std::fabs(gains[g_coef_[ch]] - optimum)) g_coef_[ch] = q;
             for (int j = 0; j < len; ++j) {
                 const int i = ch * n + ppc_position_cache_[p_coef_[ch]][j];
@@ -1970,25 +1996,26 @@ void Encoder::mdct_channel(int ch, const float* time_2n, float* spec_n) {
     if (window_type_ != 0 || next_window_type_ != 0) {
         const auto layout = window_layout(*mtab_, ftype_, window_type_);
         const auto next = window_layout(*mtab_, window_frame_type(next_window_type_), next_window_type_);
-        std::vector<float> half(n), time(2 * layout.block_size);
-        analyze_window_pair(layout, next, time_2n, half.data());
+        float* half = tmp_.data();
+        float* time = tmp_.data() + n;
+        analyze_window_pair(layout, next, time_2n, half);
         const int b = layout.block_size;
         const float inverse_scale = -std::sqrt((channels_ == 1 ? 2.0f : 1.0f) / b) / kMdctPcmScale;
         for (int j = 0; j < layout.blocks; ++j) {
-            std::fill(time.begin(), time.end(), 0.0f);
-            std::copy_n(half.data() + j * b, b, time.data() + b / 2);
-            mdct_forward(spec_n + j * b, time.data(), b, 2.0f / (b * inverse_scale));
+            std::fill(time, time + 2 * b, 0.0f);
+            std::copy_n(half + j * b, b, time + b / 2);
+            mdct_forward(spec_n + j * b, time, b, 2.0f / (b * inverse_scale));
         }
         return;
     }
-    std::vector<float> wbuf(static_cast<size_t>(n) * 2);
+    float* wbuf = tmp_.data();
     for (int i = 0; i < n * 2; i++) {
-        wbuf[static_cast<size_t>(i)] = time_2n[i] * analysis_window_[i];
+        wbuf[i] = time_2n[i] * analysis_window_[i];
     }
     const float norm = (channels_ == 1) ? 2.0f : 1.0f;
     const float inv_scale = -kMdctPcmScale / std::sqrt(norm / static_cast<float>(n));
     const float fwd = (2.0f / static_cast<float>(n)) * inv_scale;
-    mdct_forward(spec_n, wbuf.data(), n, fwd);
+    mdct_forward(spec_n, wbuf, n, fwd);
     (void)ch;
 }
 
@@ -2209,12 +2236,12 @@ void Encoder::encode_frame(const float* interleaved_n, bool force_flush, bool ne
             return std::numeric_limits<double>::infinity();
         evaluated.push_back(key);
 
-        std::vector<float> residual(static_cast<size_t>(channels_) * n);
-        std::vector<float> weights(residual.size());
+        std::vector<float>& residual = work_residual_;
+        std::vector<float>& weights = work_weights_;
         std::vector<float> scales(cfg_.temporal_search ? residual.size() : 0);
         std::vector<float> offsets(scales.size(), 0.0f);
 
-        std::vector<float> all_env(spec.size(), 1.0f);
+        std::vector<float>& all_env = work_env_;
         for (int ch = 0; ch < channels_; ch++) {
             float* sp = spec.data() + ch * n;
             float* env = all_env.data() + ch * n;
@@ -2243,21 +2270,21 @@ void Encoder::encode_frame(const float* interleaved_n, bool force_flush, bool ne
         std::memset(g_coef_, 0, sizeof(g_coef_));
         if (ppc_search && ftype_ == FrameType::Long)
             quantize_ppc(spec.data(), all_env.data(), perceptual.data());
-        std::vector<float> ppc_shape;
+        float* ppc_shape = work_ppc_shape_.data();
         if (ftype_ == FrameType::Long) {
             const int cb_len_p = (n_div_[3] + mtab_->ppc_shape_len * channels_ - 1) / n_div_[3];
-            ppc_shape.resize(static_cast<size_t>(mtab_->ppc_shape_len) * channels_);
-            dequant(ppc_coeffs_, ppc_shape.data(), FrameType::Ppc, mtab_->ppc_shape_cb,
+            dequant(ppc_coeffs_, ppc_shape, FrameType::Ppc, mtab_->ppc_shape_cb,
                     mtab_->ppc_shape_cb + cb_len_p * kPpcShapeCbSize, cb_len_p);
         }
         for (int ch = 0; ch < channels_; ++ch) {
             float* sp = spec.data() + ch * n;
             const float* env = all_env.data() + ch * n;
             if (ftype_ == FrameType::Long) {
-                std::vector<float> ppc_add(static_cast<size_t>(n), 0.0f);
-                decode_ppc(p_coef_[ch], g_coef_[ch], ppc_shape.data() + ch * mtab_->ppc_shape_len, ppc_add.data());
+                float* ppc_add = work_ppc_add_.data();
+                std::fill_n(ppc_add, n, 0.0f);
+                decode_ppc(p_coef_[ch], g_coef_[ch], ppc_shape + ch * mtab_->ppc_shape_len, ppc_add);
                 for (int i = 0; i < n; i++) {
-                    sp[i] -= ppc_add[static_cast<size_t>(i)];
+                    sp[i] -= ppc_add[i];
                     if (cfg_.temporal_search) offsets[ch * n + i] = env[i] * ppc_add[i];
                 }
             }
@@ -2271,19 +2298,19 @@ void Encoder::encode_frame(const float* interleaved_n, bool force_flush, bool ne
                 }
                 fit_subblock_gains(ch, target, importance);
             }
-            std::vector<float> bark(static_cast<size_t>(n), 1.0f);
+            float* bark = work_bark_.data();
             for (int j = 0; j < sub; ++j) {
                 quantize_gain_bark(ch, sp + j * block_size, block_size, env + j * block_size,
                                   bark_search, perceptual.data() + ch * n + j * block_size, j);
                 float gain[kChannelsMax * kSubblocksMax];
                 dec_gain(ftype_, gain);
-                dec_bark_env(bark1_[ch][j], bark_use_hist_[ch][j], ch, bark.data() + j * block_size,
+                dec_bark_env(bark1_[ch][j], bark_use_hist_[ch][j], ch, bark + j * block_size,
                              gain[ch * sub + j], ftype_);
             }
 
             float* resid = residual.data() + ch * n;
             for (int i = 0; i < n; i++) {
-                const float b = bark[static_cast<size_t>(i)];
+                const float b = bark[i];
                 resid[i] = (std::fabs(b) > 1.0e-8f) ? sp[i] / b : sp[i];
                 const float synthesis_scale = env[i] * b;
                 weights[ch * n + i] = synthesis_scale * synthesis_scale * perceptual[ch * n + i];
@@ -2320,12 +2347,14 @@ void Encoder::encode_frame(const float* interleaved_n, bool force_flush, bool ne
         };
 
         if (sub > 1) {
-            const auto target = residual;
-            const auto base_weights = weights;
+            std::copy(residual.begin(), residual.end(), work_target_.begin());
+            std::copy(weights.begin(), weights.end(), work_base_weights_.begin());
+            const std::vector<float>& target = work_target_;
+            const std::vector<float>& base_weights = work_base_weights_;
             float base[kChannelsMax * kSubblocksMax];
             dec_gain(ftype_, base);
             const auto& mode = mtab_->fmode[static_cast<int>(ftype_)];
-            std::vector<float> rec(residual.size());
+            std::vector<float>& rec = work_vq_;
             double best_error = std::numeric_limits<double>::infinity();
             auto best_main = snapshot(main_coeffs_);
             auto best_gain = snapshot(gain_bits_);
@@ -2384,15 +2413,17 @@ void Encoder::encode_frame(const float* interleaved_n, bool force_flush, bool ne
         // All candidates are scored against the same target and synthesis envelope.
         // Keep the previous two-search encoder result among the candidates: a fresh
         // approximate VQ search is not guaranteed to improve on its predecessor.
-        const auto target = residual;
-        const auto synthesis_weights = weights;
+        std::copy(residual.begin(), residual.end(), work_target_.begin());
+        std::copy(weights.begin(), weights.end(), work_base_weights_.begin());
+        const std::vector<float>& target = work_target_;
+        const std::vector<float>& synthesis_weights = work_base_weights_;
         float base_gain[kChannelsMax * kSubblocksMax];
         dec_gain(FrameType::Long, base_gain);
         uint8_t best_coeffs[sizeof(main_coeffs_)]{};
         uint8_t best_gains[sizeof(gain_bits_)]{};
         double best_error = std::numeric_limits<double>::infinity();
         const auto& main_mode = mtab_->fmode[static_cast<int>(FrameType::Long)];
-        std::vector<float> candidate(target.size());
+        std::vector<float>& candidate = work_vq_;
         uint8_t decoded_coeffs[sizeof(main_coeffs_)];
         bool decoded_valid = false;
         auto decode_candidate = [&]() {

@@ -207,6 +207,27 @@ without voice protection, including adaptive blocks and temporal ranking.
 Private reference material and its measurements are not distributed.
 
 
+## Reusable frame scratch and cached tables
+
+Per-trial heap traffic on the default path is now reused across frames:
+
+- Bark band targets, LPC residuals, Levinson/LSP polynomials and PPC
+  shape/gain/weight buffers sit on the stack. Envelope sizes fit the
+  existing `kBarkEnvMax` / `kPpcShapeLenMax` limits.
+- Trial residual, weights, envelopes, reconstructed vectors and the frozen
+  VQ target/weight copies are Encoder members, sized once in the constructor.
+- MDCT analysis writes the sine-windowed 2N buffer into `tmp_`. Long/Long
+  LPC reuses that buffer instead of windowing again.
+- PPC mu-law gains and the spectral LSP log-frequency grid are computed once
+  per encoder, not per candidate.
+
+Search decisions, beam widths and bitstream fields are unchanged. Complete
+encoded bytes match the pre-change binary on the equivalence suite. Linux
+single-run timings of two-second 44.1 kHz stereo / 96 kbps clips were about
+4–6% lower on noise and attacks; short-file equivalence timings are too
+noisy to treat as a portable speed guarantee.
+
+
 ## Reuse of LPC envelopes and normalized spectra
 
 The per-frame LSP result also holds its reconstructed LPC envelope and the
