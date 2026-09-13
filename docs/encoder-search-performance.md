@@ -38,6 +38,22 @@ scalar scans, including signs, duplicate entries, unaligned input, partial SIMD
 groups, and finite cutoffs that may reject every candidate. The existing
 encoder equivalence script checks complete output against a pre-change binary.
 
+## Grouped beam seeding
+
+Forward and reverse beam seeding now also dispatch once per codebook. The
+ISA-specific loop scores candidates and inserts them in the original stable
+order. A candidate whose bounded error is already at least the last beam error
+is rejected immediately, avoiding an unsuccessful walk through every beam
+slot. The beam widths, candidate order, distance summation, pruning thresholds
+and strict tie rules remain unchanged. Grouping alone did not establish a
+consistent timing benefit in the limited checks; the retained variant includes
+the early rejection before insertion.
+
+`--test-simd` compares the resulting beam against a stable sort of unpruned
+scalar distances for widths 4/8/16/32. Coverage includes duplicate codebook
+entries, zero-weight ties, signs, vector tails, unaligned inputs, fewer
+candidates than beam slots and output-boundary sentinels.
+
 ## Reusable VQ scratch buffers
 
 The three temporary float vectors used by each range are now thread-local.

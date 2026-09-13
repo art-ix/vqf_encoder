@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <algorithm>
 
 #if defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86)
 #define TWINVQ_X86 1
@@ -75,6 +76,10 @@ struct CodebookMatch { float error; int index; int sign; };
 using CodebookSearch = CodebookMatch (*)(const float*, const float*, const int16_t*,
                                         int, int, int, bool, float);
 
+// The caller provides beam_size entries (up to 32) for indices and signs.
+using BeamSearch = void (*)(const float*, const float*, const int16_t*,
+                             int, int, int, bool, int, int*, int*);
+
 inline CodebookMatch scalar_search(const float* target, const float* weight,
         const int16_t* code, int stride, int length, int count, bool signed_code, float limit) {
     CodebookMatch best{limit, -1, 1};
@@ -87,6 +92,33 @@ inline CodebookMatch scalar_search(const float* target, const float* weight,
         }
     }
     return best;
+}
+
+inline void scalar_beam(const float* target, const float* weight,
+        const int16_t* code, int stride, int length, int count, bool signed_code,
+        int beam_size, int* indices, int* signs) {
+    float errors[32];
+    std::fill_n(errors, beam_size, 1.0e30f);
+    std::fill_n(indices, beam_size, 0);
+    std::fill_n(signs, beam_size, 0);
+    for (int a = 0; a < count; ++a) {
+        for (int s = 0; s < (signed_code ? 2 : 1); ++s) {
+            const int sign = s ? -1 : 1;
+            const float error = scalar_error(target, weight, code + a * stride,
+                                               sign, length, errors[beam_size - 1]);
+            if (error >= errors[beam_size - 1]) continue;
+            for (int slot = 0; slot < beam_size; ++slot) {
+                if (error >= errors[slot]) continue;
+                for (int k = beam_size - 1; k > slot; --k) {
+                    errors[k] = errors[k - 1];
+                    indices[k] = indices[k - 1];
+                    signs[k] = signs[k - 1];
+                }
+                errors[slot] = error; indices[slot] = a; signs[slot] = sign;
+                break;
+            }
+        }
+    }
 }
 #if defined(TWINVQ_X86)
 // SIMD evaluates independent terms; scalar accumulation preserves the old
@@ -171,6 +203,60 @@ TWINVQ_TARGET("avx2") inline CodebookMatch avx2_search(const float* target, cons
         }
     }
     return best;
+}
+
+TWINVQ_TARGET("sse4.1") inline void sse41_beam(const float* target, const float* weight,
+        const int16_t* code, int stride, int length, int count, bool signed_code,
+        int beam_size, int* indices, int* signs) {
+    float errors[32];
+    std::fill_n(errors, beam_size, 1.0e30f);
+    std::fill_n(indices, beam_size, 0);
+    std::fill_n(signs, beam_size, 0);
+    for (int a = 0; a < count; ++a) {
+        for (int s = 0; s < (signed_code ? 2 : 1); ++s) {
+            const int sign = s ? -1 : 1;
+            const float error = sse41_error_inline(target, weight, code + a * stride,
+                                               sign, length, errors[beam_size - 1]);
+            if (error >= errors[beam_size - 1]) continue;
+            for (int slot = 0; slot < beam_size; ++slot) {
+                if (error >= errors[slot]) continue;
+                for (int k = beam_size - 1; k > slot; --k) {
+                    errors[k] = errors[k - 1];
+                    indices[k] = indices[k - 1];
+                    signs[k] = signs[k - 1];
+                }
+                errors[slot] = error; indices[slot] = a; signs[slot] = sign;
+                break;
+            }
+        }
+    }
+}
+
+TWINVQ_TARGET("avx2") inline void avx2_beam(const float* target, const float* weight,
+        const int16_t* code, int stride, int length, int count, bool signed_code,
+        int beam_size, int* indices, int* signs) {
+    float errors[32];
+    std::fill_n(errors, beam_size, 1.0e30f);
+    std::fill_n(indices, beam_size, 0);
+    std::fill_n(signs, beam_size, 0);
+    for (int a = 0; a < count; ++a) {
+        for (int s = 0; s < (signed_code ? 2 : 1); ++s) {
+            const int sign = s ? -1 : 1;
+            const float error = avx2_error_inline(target, weight, code + a * stride,
+                                               sign, length, errors[beam_size - 1]);
+            if (error >= errors[beam_size - 1]) continue;
+            for (int slot = 0; slot < beam_size; ++slot) {
+                if (error >= errors[slot]) continue;
+                for (int k = beam_size - 1; k > slot; --k) {
+                    errors[k] = errors[k - 1];
+                    indices[k] = indices[k - 1];
+                    signs[k] = signs[k - 1];
+                }
+                errors[slot] = error; indices[slot] = a; signs[slot] = sign;
+                break;
+            }
+        }
+    }
 }
 #endif
 } // namespace twinvq::detail

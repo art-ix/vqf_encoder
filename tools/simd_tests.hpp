@@ -65,6 +65,42 @@ int test_simd() {
                 }
             }
         }
+    // A stable sort of full scalar errors is an independent reference for
+    // bounded beam selection, including ties and fewer candidates than slots.
+    std::vector<BeamSearch> beams{scalar_beam};
+#if defined(TWINVQ_X86)
+    if (has_sse41()) beams.push_back(sse41_beam);
+    if (has_avx2()) beams.push_back(avx2_beam);
+#endif
+    float zero_weights[72]{};
+    for (const float* weights : {static_cast<const float*>(weight), static_cast<const float*>(zero_weights)})
+        for (int offset : {0, 3}) for (int length = 1; length <= 65; ++length)
+            for (bool signed_code : {false, true}) for (int entries : {1, count}) {
+                std::vector<CodebookMatch> ordered;
+                for (int a = 0; a < entries; ++a) for (int s = 0; s < (signed_code ? 2 : 1); ++s) {
+                    const int sign = s ? -1 : 1;
+                    ordered.push_back({scalar_error(target + offset, weights + offset,
+                        book + a * stride + offset, sign, length,
+                        std::numeric_limits<float>::infinity()), a, sign});
+                }
+                std::stable_sort(ordered.begin(), ordered.end(),
+                    [](const CodebookMatch& a, const CodebookMatch& b) { return a.error < b.error; });
+                for (int size : {4, 8, 16, 32}) for (auto beam : beams) {
+                    int indices[34], signs[34];
+                    std::fill_n(indices, 34, -99); std::fill_n(signs, 34, -99);
+                    beam(target + offset, weights + offset, book + offset, stride,
+                         length, entries, signed_code, size, indices + 1, signs + 1);
+                    if (indices[0] != -99 || indices[size + 1] != -99 ||
+                        signs[0] != -99 || signs[size + 1] != -99)
+                        throw std::runtime_error("SIMD beam wrote outside output");
+                    for (int slot = 0; slot < size; ++slot) {
+                        const bool valid = slot < static_cast<int>(ordered.size()) && ordered[slot].error < 1.0e30f;
+                        if (indices[slot + 1] != (valid ? ordered[slot].index : 0) ||
+                            signs[slot + 1] != (valid ? ordered[slot].sign : 0))
+                            throw std::runtime_error("SIMD beam changed ordered candidates");
+                    }
+                }
+            }
     std::cout << "SIMD kernels passed: scalar=1 sse41=" << has_sse41() << " avx2=" << has_avx2() << "\n";
     return 0;
 }

@@ -1087,14 +1087,14 @@ void Encoder::quantize_vectors(const float* residual, const float* weights, Fram
     const int16_t* cb0 = ppc ? mtab_->ppc_shape_cb : mtab_->fmode[fi].cb0;
     const int16_t* cb1 = ppc ? cb0 + cb_len * kPpcShapeCbSize : mtab_->fmode[fi].cb1;
     uint8_t* dst = ppc ? ppc_coeffs_ : main_coeffs_;
-    detail::VectorError bounded_vector_error = detail::scalar_error;
+    detail::BeamSearch search_beam = detail::scalar_beam;
     detail::CodebookSearch search_codebook = detail::scalar_search;
 #if defined(TWINVQ_X86)
     if (cfg_.simd == Simd::Avx2 || (cfg_.simd == Simd::Auto && detail::has_avx2())) {
-        bounded_vector_error = detail::avx2_error;
+        search_beam = detail::avx2_beam;
         search_codebook = detail::avx2_search;
     } else if (cfg_.simd == Simd::Sse41 || (cfg_.simd == Simd::Auto && detail::has_sse41())) {
-        bounded_vector_error = detail::sse41_error;
+        search_beam = detail::sse41_beam;
         search_codebook = detail::sse41_search;
     }
 #endif
@@ -1132,28 +1132,9 @@ void Encoder::quantize_vectors(const float* residual, const float* weights, Fram
             // belong to the best cb0+cb1 pair. Score in reconstructed MDCT units
             // so LPC peaks do not amplify otherwise small quantization errors.
             const int beam_size = cfg_.vq_beam;
-            float beam_error[32];
-            int beam_index[32]{}, beam_sign[32]{};
-            std::fill_n(beam_error, beam_size, 1.0e30f);
-            for (int a = 0; a < n0; a++) {
-                const int16_t* t0 = cb0 + a * cb_len;
-                const int smax = sign0_en ? 2 : 1;
-                for (int s = 0; s < smax; s++) {
-                    const int sg = (s == 0) ? 1 : -1;
-                    const float e = bounded_vector_error(target.data(), weight.data(), t0,
-                                                         sg, length, beam_error[beam_size - 1]);
-                    for (int slot = 0; slot < beam_size; ++slot) {
-                        if (e >= beam_error[slot]) continue;
-                        for (int k = beam_size - 1; k > slot; --k) {
-                            beam_error[k] = beam_error[k - 1];
-                            beam_index[k] = beam_index[k - 1];
-                            beam_sign[k] = beam_sign[k - 1];
-                        }
-                        beam_error[slot] = e; beam_index[slot] = a; beam_sign[slot] = sg;
-                        break;
-                    }
-                }
-            }
+            int beam_index[32], beam_sign[32];
+            search_beam(target.data(), weight.data(), cb0, cb_len, length,
+                        n0, sign0_en, beam_size, beam_index, beam_sign);
             auto refine_pair = [&]() {
                 for (int pass = 0; pass < 2; ++pass) {
                     for (int stage = 0; stage < 2; ++stage) {
@@ -1197,26 +1178,9 @@ void Encoder::quantize_vectors(const float* residual, const float* weights, Fram
             const int forward0 = best0, forward1 = best1, forward_s0 = s0, forward_s1 = s1;
             const float forward_error = best_e;
             constexpr int reverse_beam = 8;
-            float reverse_error[reverse_beam];
-            int reverse_index[reverse_beam]{}, reverse_sign[reverse_beam]{};
-            std::fill_n(reverse_error, reverse_beam, 1.0e30f);
-            for (int b = 0; b < n1; ++b) {
-                for (int sign = 0; sign < (sign1_en ? 2 : 1); ++sign) {
-                    const int sg = sign ? -1 : 1;
-                    const float e = bounded_vector_error(target.data(), weight.data(), cb1 + b * cb_len,
-                                                         sg, length, reverse_error[reverse_beam - 1]);
-                    for (int slot = 0; slot < reverse_beam; ++slot) {
-                        if (e >= reverse_error[slot]) continue;
-                        for (int k = reverse_beam - 1; k > slot; --k) {
-                            reverse_error[k] = reverse_error[k - 1];
-                            reverse_index[k] = reverse_index[k - 1];
-                            reverse_sign[k] = reverse_sign[k - 1];
-                        }
-                        reverse_error[slot] = e; reverse_index[slot] = b; reverse_sign[slot] = sg;
-                        break;
-                    }
-                }
-            }
+            int reverse_index[reverse_beam], reverse_sign[reverse_beam];
+            search_beam(target.data(), weight.data(), cb1, cb_len, length,
+                        n1, sign1_en, reverse_beam, reverse_index, reverse_sign);
             best_e = 1.0e30f;
             best0 = best1 = 0; s0 = s1 = 1;
             const int reverse_count = std::min(reverse_beam, n1 * (sign1_en ? 2 : 1));
