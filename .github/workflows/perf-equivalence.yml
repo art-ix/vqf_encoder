@@ -1,0 +1,58 @@
+name: perf-equivalence
+
+on:
+  push:
+    branches: [encoder-quality]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux-equivalence:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Prepare parent worktree
+        shell: bash
+        run: |
+          set -euo pipefail
+          git worktree add /tmp/vqf-parent HEAD^
+
+      - name: Build candidate and parent
+        shell: bash
+        run: |
+          set -euo pipefail
+          make -j2 all
+          make -C /tmp/vqf-parent -j2 all
+
+      - name: Targeted SIMD regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./bin/vqf_encode --test-simd
+
+      - name: Byte equivalence smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/test_encoder_equivalence.py \
+            bin/vqf_encode /tmp/vqf-parent/bin/vqf_encode
+
+      - name: Alternating equivalence timings
+        shell: bash
+        run: |
+          set -euo pipefail
+          for pass in 1 2 3 4; do
+            echo "=== timing pass $pass ==="
+            if (( pass % 2 )); then
+              python3 tools/test_encoder_equivalence.py \
+                bin/vqf_encode /tmp/vqf-parent/bin/vqf_encode
+            else
+              python3 tools/test_encoder_equivalence.py \
+                /tmp/vqf-parent/bin/vqf_encode bin/vqf_encode
+            fi
+          done
