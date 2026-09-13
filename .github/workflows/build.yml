@@ -9,6 +9,8 @@ permissions:
   contents: write
 
 env:
+  # One requested prerelease: ordinary branch pushes do not publish releases.
+  QUALITY_RELEASE_TAG: ${{ github.event_name == 'push' && github.ref == 'refs/heads/encoder-quality' && github.event.head_commit.message == 'Release encoder-quality v1.2-encoder-quality.1' && 'v1.2-encoder-quality.1' || '' }}
   FOOBAR2000_SDK_URL: https://www.foobar2000.org/downloads/SDK-2025-03-07.7z
 
 jobs:
@@ -90,7 +92,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $ver = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME.TrimStart('v') } else { 'dev' }
+          $ver = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME.TrimStart('v') } elseif ($env:QUALITY_RELEASE_TAG) { $env:QUALITY_RELEASE_TAG.TrimStart('v') } else { 'dev' }
           $out = "foo_enc_vqf-$ver-win-x64"
           New-Item -ItemType Directory -Force $out | Out-Null
           Copy-Item bin\x64\Release\vqf_encode.exe $out\
@@ -139,3 +141,33 @@ jobs:
             **Component:** copy `foo_enc_vqf.dll` into the foobar2000 `components` folder and restart. Bitrate is under Preferences → Advanced → TwinVQ encoder.
 
             **Converter:** copy `vqf_encode.exe` next to foobar2000. Encoder `vqf_encode.exe`, extension `vqf`, parameters `-b 96 %s %d` (WAV temp file).
+
+      - name: Publish encoder-quality prerelease
+        if: env.QUALITY_RELEASE_TAG != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.QUALITY_RELEASE_TAG }}
+          target_commitish: ${{ github.sha }}
+          name: Encoder quality preview 1.2
+          prerelease: true
+          make_latest: false
+          files: foo_enc_vqf-*-win-x64.zip
+          fail_on_unmatched_files: true
+          body: |
+            Test release built from the `encoder-quality` branch. Stable releases remain unchanged.
+
+            - Expanded LSP/Bark and vector-quantization search, with PPC enabled by default.
+            - Automatic worker count (up to eight), reusable workers, and dynamic VQ task distribution.
+            - Runtime scalar/SSE4.1/AVX2 selection; packed AVX2 searches evaluate eight candidates together.
+            - Reuse of scratch buffers, converged searches, and reconstructed candidates to reduce repeated work.
+            - Optional psychoacoustic weighting, adaptive blocks and temporal scoring remain opt-in.
+
+            The Windows x64 ZIP contains `vqf_encode.exe`, `vqf_decode.exe`,
+            `foo_enc_vqf.dll`, installation instructions and the license.
+            Build and codec tests must pass before this package is published.
+
+            foobar2000 Converter: encoder `vqf_encode.exe`, extension `vqf`,
+            parameters `-b 96 %s %d`. Use `-b 80` for 80 kb/s.
+            To disable PPC explicitly, add `--no-ppc-search`.
+            Playback requires a VQF input component such as
+            [vqf_decoder](https://github.com/art-ix/vqf_decoder).
