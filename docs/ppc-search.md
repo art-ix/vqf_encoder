@@ -21,6 +21,9 @@ weighted forward/reverse main-VQ search with the PPC codebooks and permutation.
 Quantize both channels jointly because PPC permutations can cross channels.
 Fit each channel's gain to the decoded shape using the actual transmitted
 gain values, then repeat shape/gain fitting once and retain the better fit.
+If the fitted gain indices are unchanged in every channel, skip the repeated
+pass: its joint shape-VQ inputs and deterministic result would be identical.
+The check must include all channels because the PPC permutation can mix them.
 
 Subtract the decoded PPC contribution before Bark, gain and main VQ fitting.
 Compare the resulting complete spectral reconstruction with a fixed-PPC trial
@@ -61,3 +64,10 @@ the extra work. Neither is enabled by `--ppc-search`.
 
 The retained implementation instead avoids redundant work without narrowing
 its candidate set. See [encoder search performance](encoder-search-performance.md).
+
+Two additional performance directions were inspected. Precomputing per-bin
+weighted energy before ranking periods preserved output in limited checks but
+showed no consistent end-to-end benefit, so it was not retained. Exact duplicate
+period maps were counted; their small share in the 44.1 kHz modes did not justify
+adding a second map index. The retained convergence check removes a whole
+redundant shape/gain pass without changing candidate selection.

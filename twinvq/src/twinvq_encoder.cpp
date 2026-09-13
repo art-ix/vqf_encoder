@@ -1030,6 +1030,8 @@ void Encoder::quantize_ppc(const float* spec, const float* lpc_env, const float*
     int best_gain[kChannelsMax]{};
     double best_error = std::numeric_limits<double>::infinity();
     for (int pass = 0; pass < 2; ++pass) {
+        int input_gain[kChannelsMax]{};
+        std::copy_n(g_coef_, channels_, input_gain);
         for (int ch = 0; ch < channels_; ++ch) for (int j = 0; j < len; ++j) {
             const int i = ch * n + ppc_position_cache_[p_coef_[ch]][j];
             const float gain = gains[g_coef_[ch]];
@@ -1065,6 +1067,9 @@ void Encoder::quantize_ppc(const float* spec, const float* lpc_env, const float*
             std::memcpy(best_shape, ppc_coeffs_, sizeof(ppc_coeffs_));
             std::copy_n(g_coef_, channels_, best_gain);
         }
+        // Shape VQ depends on the gains, spectrum, envelope and perceptual
+        // weights only. Unchanged gains would repeat the exact same search.
+        if (std::equal(input_gain, input_gain + channels_, g_coef_)) break;
     }
     std::memcpy(ppc_coeffs_, best_shape, sizeof(ppc_coeffs_));
     std::copy_n(best_gain, channels_, g_coef_);
