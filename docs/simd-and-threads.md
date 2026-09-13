@@ -50,14 +50,26 @@ standard library threading implementation, without an OpenMP dependency.
 
 ## SIMD work
 
-SSE4.1 evaluates four weighted distance terms at a time; AVX2 evaluates eight.
-Both retain scalar accumulation in the original order and the original cutoff
-after every four terms. AVX2 can compute four extra terms before an early exit.
+SSE4.1 evaluates four weighted distance terms at a time. AVX2 beam seeding
+uses eight terms at a time, retaining scalar accumulation and the four-term
+cutoff. AVX2 codebook scans instead evaluate eight candidates simultaneously:
+each lane accumulates one candidate's error in the original bin order.
+Candidate selection still follows the original index/sign order with strict
+ties. A shared cutoff can reject the whole group after four-bin checkpoints;
+it may do extra work compared with updating the cutoff after every candidate.
+
+For those scans, the caller prepares transposed float codebooks containing
+positive entries and interleaved positive/negative entries. Each caller thread
+caches immutable tables by source address and vector stride, preparing them
+before publishing worker tasks. Tables are retained until that thread exits.
+The original int16 tables remain in use for reconstruction and other kernels.
+Main VQ and PPC use this scan; scalar/SSE4.1 retain their existing paths.
+
 MSVC locally overrides the library’s `/fp:fast` setting with precise semantics
 and disabled contraction for these kernels. No horizontal reduction, fused
-multiply-add, reassociation, wider beam changes
-or altered quantizer decisions are introduced. Loads never cross the vector
-length, including short tails and unaligned codebook addresses.
+multiply-add, reassociation, wider beam changes or altered quantizer decisions
+are introduced. Padded final candidate groups use a valid-lane mask; target and
+weight loads stay within the requested vector length.
 
 Automatic dispatch prefers AVX2, then SSE4.1, then scalar. GCC/Clang use CPU
 feature built-ins and per-function targets. MSVC checks CPUID plus OS-enabled
@@ -72,7 +84,10 @@ and [Microsoft x64 intrinsics](https://learn.microsoft.com/en-us/cpp/intrinsics/
 
 `--test-simd` compares scalar/SSE4.1/AVX2 errors bit for bit for both signs,
 int16 extremes, zero weights, misaligned starts, lengths 1..65 and cutoff
-thresholds including ties. Unsupported CPU kernels are skipped.
+thresholds including ties. The candidate-lane kernel is also checked against
+scalar codebook scans with duplicate entries, zero weights, signs, unaligned
+source addresses, partial candidate groups and vector tails. Unsupported CPU
+kernels are skipped.
 
 `python tools/test_parallel_options.py ENCODER [PREVIOUS_ENCODER]` compares
 complete bitstreams across available SIMD backends and one/four workers, plus

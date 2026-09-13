@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <algorithm>
+#include <vector>
 
 #if defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86)
 #define TWINVQ_X86 1
@@ -75,6 +76,27 @@ inline bool has_avx2() {
 struct CodebookMatch { float error; int index; int sign; };
 using CodebookSearch = CodebookMatch (*)(const float*, const float*, const int16_t*,
                                         int, int, int, bool, float);
+
+// Eight consecutive candidate values for each frequency bin. Signed entries
+// preserve the original +code/-code order; the final group is zero padded.
+struct PackedCodebook {
+    const int16_t* source;
+    int stride, count;
+    std::vector<float> positive, signed_values;
+    PackedCodebook(const int16_t* code, int width, int entries)
+        : source(code), stride(width), count(entries),
+          positive(((entries + 7) / 8) * 8 * width),
+          signed_values(((entries * 2 + 7) / 8) * 8 * width) {
+        for (int a = 0; a < entries; ++a) for (int j = 0; j < width; ++j) {
+            const float v = code[a * width + j];
+            positive[(a / 8) * width * 8 + j * 8 + a % 8] = v;
+            for (int sign = 0; sign < 2; ++sign) {
+                const int k = 2 * a + sign;
+                signed_values[(k / 8) * width * 8 + j * 8 + k % 8] = sign ? -v : v;
+            }
+        }
+    }
+};
 
 // The caller provides beam_size entries (up to 32) for indices and signs.
 using BeamSearch = void (*)(const float*, const float*, const int16_t*,
@@ -257,6 +279,39 @@ TWINVQ_TARGET("avx2") inline void avx2_beam(const float* target, const float* we
             }
         }
     }
+}
+
+// Each lane sums one candidate in scalar bin order. A group may do extra
+// arithmetic because its shared cutoff is updated only after ordered selection.
+TWINVQ_TARGET("avx2") inline CodebookMatch avx2_candidates(const float* target,
+        const float* weight, const PackedCodebook& book, int length, int count,
+        bool signed_code, float limit) {
+    CodebookMatch best{limit, -1, 1};
+    const float* packed = signed_code ? book.signed_values.data() : book.positive.data();
+    const int entries = count * (signed_code ? 2 : 1);
+    for (int first = 0; first < entries; first += 8) {
+        const int lanes = std::min(8, entries - first);
+        const int mask = (1 << lanes) - 1;
+        const float* values = packed + (first / 8) * book.stride * 8;
+        __m256 errors = _mm256_setzero_ps();
+        const __m256 cutoff = _mm256_set1_ps(best.error);
+        for (int j = 0; j < length; ++j) {
+            const __m256 d = _mm256_sub_ps(_mm256_set1_ps(target[j]), _mm256_loadu_ps(values + j * 8));
+            const __m256 term = _mm256_mul_ps(_mm256_mul_ps(_mm256_set1_ps(weight[j]), d), d);
+            errors = _mm256_add_ps(errors, term);
+            if ((j + 1) % 4 == 0 &&
+                !(_mm256_movemask_ps(_mm256_cmp_ps(errors, cutoff, _CMP_LT_OQ)) & mask)) break;
+        }
+        float error[8];
+        _mm256_storeu_ps(error, errors);
+        for (int lane = 0; lane < lanes; ++lane) {
+            const int entry = first + lane;
+            if (error[lane] < best.error)
+                best = {error[lane], signed_code ? entry / 2 : entry,
+                         signed_code && entry % 2 ? -1 : 1};
+        }
+    }
+    return best;
 }
 #endif
 } // namespace twinvq::detail

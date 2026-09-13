@@ -38,6 +38,21 @@ scalar scans, including signs, duplicate entries, unaligned input, partial SIMD
 groups, and finite cutoffs that may reject every candidate. The existing
 encoder equivalence script checks complete output against a pre-change binary.
 
+## AVX2 across candidates
+
+For pair searches and coordinate refinement, AVX2 lanes now represent eight
+candidates rather than eight bins. Codebooks are transposed once per source and
+stride on each caller thread, with separate unsigned and interleaved signed
+layouts. Each lane preserves the old ordered weighted-error accumulation.
+Selection proceeds in original candidate order after each group. Whole-group
+pruning uses the incumbent at group entry, which is a safe but sometimes looser
+cutoff than the previous per-candidate scan. This trades some extra arithmetic
+for parallel accumulators and fewer candidate-loop iterations.
+
+Beam seeding retains its existing kernel. The runtime SIMD selection and the
+scalar/SSE4.1 fallbacks are unchanged. The extended SIMD test, encoder byte
+comparison and full codec/parallel suites cover the new path.
+
 ## Grouped beam seeding
 
 Forward and reverse beam seeding now also dispatch once per codebook. The

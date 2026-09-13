@@ -1098,6 +1098,33 @@ void Encoder::quantize_vectors(const float* residual, const float* weights, Fram
         search_codebook = detail::sse41_search;
     }
 #endif
+#if defined(TWINVQ_X86)
+    const bool candidate_lanes = search_codebook == detail::avx2_search;
+    const detail::PackedCodebook* packed0 = nullptr;
+    const detail::PackedCodebook* packed1 = nullptr;
+    // Prepare on the caller before publishing tasks. Worker reads are immutable.
+    // Codebooks contain 64 entries; cache by source and stride across frame types.
+    thread_local std::vector<detail::PackedCodebook> packed_books;
+    if (candidate_lanes) {
+        auto prepare = [&](const int16_t* code) {
+            for (size_t i = 0; i < packed_books.size(); ++i)
+                if (packed_books[i].source == code && packed_books[i].stride == cb_len) return i;
+            packed_books.emplace_back(code, cb_len, 64);
+            return packed_books.size() - 1;
+        };
+        const size_t first = prepare(cb0), second = prepare(cb1);
+        packed0 = &packed_books[first]; packed1 = &packed_books[second];
+    }
+#endif
+    const auto scan_codebook = [&](const float* target, const float* weight, const int16_t* code,
+            int stride, int length, int count, bool signs, float limit) {
+#if defined(TWINVQ_X86)
+        if (candidate_lanes)
+            return detail::avx2_candidates(target, weight, code == cb0 ? *packed0 : *packed1,
+                                           length, count, signs, limit);
+#endif
+        return search_codebook(target, weight, code, stride, length, count, signs, limit);
+    };
     const auto encode_range = [&](int begin, int end) {
         int pos = std::min(begin, static_cast<int>(length_change_[fi])) * length_[fi][0] +
                   std::max(0, begin - static_cast<int>(length_change_[fi])) * length_[fi][1];
@@ -1158,7 +1185,7 @@ void Encoder::quantize_vectors(const float* residual, const float* weights, Fram
                         const int16_t* fixed = (stage ? cb0 : cb1) + fixed_index * cb_len;
                         for (int j = 0; j < length; ++j) rest[j] = target[j] - sign * fixed[j];
                         const int16_t* cb = stage ? cb1 : cb0;
-                        const auto match = search_codebook(rest.data(), weight.data(), cb,
+                        const auto match = scan_codebook(rest.data(), weight.data(), cb,
                             cb_len, length, stage ? n1 : n0, stage ? sign1_en : sign0_en, best_e);
                         scanned_index[stage] = fixed_index;
                         scanned_sign[stage] = sign;
@@ -1183,7 +1210,7 @@ void Encoder::quantize_vectors(const float* residual, const float* weights, Fram
                 if (!beam_sign[slot]) continue;
                 const int16_t* t0 = cb0 + beam_index[slot] * cb_len;
                 for (int j = 0; j < length; ++j) rest[j] = target[j] - beam_sign[slot] * t0[j];
-                const auto match = search_codebook(rest.data(), weight.data(), cb1,
+                const auto match = scan_codebook(rest.data(), weight.data(), cb1,
                     cb_len, length, n1, sign1_en, best_e);
                 if (match.index >= 0) {
                     best_e = match.error;
@@ -1215,7 +1242,7 @@ void Encoder::quantize_vectors(const float* residual, const float* weights, Fram
                 if (!reverse_sign[slot]) continue;
                 for (int j = 0; j < length; ++j)
                     rest[j] = target[j] - reverse_sign[slot] * cb1[reverse_index[slot] * cb_len + j];
-                const auto match = search_codebook(rest.data(), weight.data(), cb0,
+                const auto match = scan_codebook(rest.data(), weight.data(), cb0,
                     cb_len, length, n0, sign0_en, best_e);
                 if (match.index >= 0) {
                     best_e = match.error; best0 = match.index; s0 = match.sign;

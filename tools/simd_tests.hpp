@@ -101,6 +101,33 @@ int test_simd() {
                     }
                 }
             }
+#if defined(TWINVQ_X86)
+    if (has_avx2()) {
+        int16_t packed_source[64 * stride + 4];
+        for (auto& value : packed_source)
+            value = static_cast<int16_t>(static_cast<int>(random() % 65536) - 32768);
+        packed_source[4] = -32768; packed_source[6] = 32767; packed_source[7] = 0;
+        std::copy_n(packed_source, stride, packed_source + stride);
+        for (int offset : {0, 3}) {
+            const PackedCodebook packed(packed_source + offset, stride, 64);
+            for (int length : {1, 3, 4, 7, 8, 9, 17, 65})
+                for (int entries : {1, 3, 12, 64}) for (bool signs : {false, true})
+                    for (const float* weights : {static_cast<const float*>(weight), static_cast<const float*>(zero_weights)}) {
+                        const float full = scalar_error(target + offset, weights + offset,
+                            packed_source + offset, 1, length, std::numeric_limits<float>::infinity());
+                        for (float limit : {0.0f, full * 0.7f, full, std::numeric_limits<float>::infinity()}) {
+                            const auto reference = scalar_search(target + offset, weights + offset,
+                                packed_source + offset, stride, length, entries, signs, limit);
+                            const auto actual = avx2_candidates(target + offset, weights + offset,
+                                packed, length, entries, signs, limit);
+                            if (actual.index != reference.index || actual.sign != reference.sign ||
+                                std::memcmp(&actual.error, &reference.error, sizeof(float)))
+                                throw std::runtime_error("Candidate-lane AVX2 changed winner/error");
+                        }
+                    }
+        }
+    }
+#endif
     std::cout << "SIMD kernels passed: scalar=1 sse41=" << has_sse41() << " avx2=" << has_avx2() << "\n";
     return 0;
 }
