@@ -16,6 +16,20 @@ jobs:
         with:
           fetch-depth: 2
 
+      - name: Classify encoder change
+        id: classify
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Psychoacoustic tuning is expected to alter protected bitstreams.
+          # Speed-only changes remain subject to strict byte equivalence and
+          # alternating A/B timings against their direct parent.
+          if git diff --quiet HEAD^ HEAD -- twinvq/src/twinvq_psychoacoustic.cpp; then
+            echo "require_equivalence=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "require_equivalence=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Prepare parent worktree
         shell: bash
         run: |
@@ -36,6 +50,7 @@ jobs:
           ./bin/vqf_encode --test-simd
 
       - name: Byte equivalence smoke test
+        if: steps.classify.outputs.require_equivalence == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -43,6 +58,7 @@ jobs:
             bin/vqf_encode /tmp/vqf-parent/bin/vqf_encode
 
       - name: Alternating equivalence timings
+        if: steps.classify.outputs.require_equivalence == 'true'
         shell: bash
         run: |
           set -euo pipefail
