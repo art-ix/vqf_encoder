@@ -7,8 +7,10 @@
 #if defined(_MSC_VER)
 #include <intrin.h>
 #define TWINVQ_TARGET(x) __declspec(noinline)
+#define TWINVQ_INLINE_TARGET(x) __forceinline
 #else
 #define TWINVQ_TARGET(x) __attribute__((target(x), noinline))
+#define TWINVQ_INLINE_TARGET(x) __attribute__((target(x), always_inline)) inline
 #endif
 #endif
 
@@ -66,10 +68,30 @@ inline bool has_avx2() {
 #endif
 }
 
+
+// Scan candidates in the original index/sign order. The incumbent is updated
+// after each distance, preserving early exits and strict tie handling.
+struct CodebookMatch { float error; int index; int sign; };
+using CodebookSearch = CodebookMatch (*)(const float*, const float*, const int16_t*,
+                                        int, int, int, bool, float);
+
+inline CodebookMatch scalar_search(const float* target, const float* weight,
+        const int16_t* code, int stride, int length, int count, bool signed_code, float limit) {
+    CodebookMatch best{limit, -1, 1};
+    for (int a = 0; a < count; ++a) {
+        for (int s = 0; s < (signed_code ? 2 : 1); ++s) {
+            const int sign = s ? -1 : 1;
+            const float error = scalar_error(target, weight, code + a * stride,
+                                                sign, length, best.error);
+            if (error < best.error) best = {error, a, sign};
+        }
+    }
+    return best;
+}
 #if defined(TWINVQ_X86)
 // SIMD evaluates independent terms; scalar accumulation preserves the old
 // rounding order and the pruning check after every four terms. No FMA/reduction.
-TWINVQ_TARGET("sse4.1") inline float sse41_error(const float* target, const float* weight,
+TWINVQ_INLINE_TARGET("sse4.1") float sse41_error_inline(const float* target, const float* weight,
                                 const int16_t* code, int sign, int length, float limit) {
     float error = 0;
     int j = 0;
@@ -89,7 +111,7 @@ TWINVQ_TARGET("sse4.1") inline float sse41_error(const float* target, const floa
     return error;
 }
 
-TWINVQ_TARGET("avx2") inline float avx2_error(const float* target, const float* weight,
+TWINVQ_INLINE_TARGET("avx2") float avx2_error_inline(const float* target, const float* weight,
                                const int16_t* code, int sign, int length, float limit) {
     float error = 0;
     int j = 0;
@@ -111,6 +133,44 @@ TWINVQ_TARGET("avx2") inline float avx2_error(const float* target, const float* 
         if ((j + 1) % 4 == 0 && error >= limit) return error;
     }
     return error;
+}
+
+TWINVQ_TARGET("sse4.1") inline float sse41_error(const float* target, const float* weight,
+        const int16_t* code, int sign, int length, float limit) {
+    return sse41_error_inline(target, weight, code, sign, length, limit);
+}
+
+TWINVQ_TARGET("avx2") inline float avx2_error(const float* target, const float* weight,
+        const int16_t* code, int sign, int length, float limit) {
+    return avx2_error_inline(target, weight, code, sign, length, limit);
+}
+
+TWINVQ_TARGET("sse4.1") inline CodebookMatch sse41_search(const float* target, const float* weight,
+        const int16_t* code, int stride, int length, int count, bool signed_code, float limit) {
+    CodebookMatch best{limit, -1, 1};
+    for (int a = 0; a < count; ++a) {
+        for (int s = 0; s < (signed_code ? 2 : 1); ++s) {
+            const int sign = s ? -1 : 1;
+            const float error = sse41_error_inline(target, weight, code + a * stride,
+                                                sign, length, best.error);
+            if (error < best.error) best = {error, a, sign};
+        }
+    }
+    return best;
+}
+
+TWINVQ_TARGET("avx2") inline CodebookMatch avx2_search(const float* target, const float* weight,
+        const int16_t* code, int stride, int length, int count, bool signed_code, float limit) {
+    CodebookMatch best{limit, -1, 1};
+    for (int a = 0; a < count; ++a) {
+        for (int s = 0; s < (signed_code ? 2 : 1); ++s) {
+            const int sign = s ? -1 : 1;
+            const float error = avx2_error_inline(target, weight, code + a * stride,
+                                                sign, length, best.error);
+            if (error < best.error) best = {error, a, sign};
+        }
+    }
+    return best;
 }
 #endif
 } // namespace twinvq::detail

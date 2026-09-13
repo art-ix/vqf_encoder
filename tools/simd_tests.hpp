@@ -32,6 +32,39 @@ int test_simd() {
                 }
             }
         }
+    // Compare grouped searches with the original candidate-at-a-time loop.
+    // Duplicate entries cover ties; finite limits cover no winner and pruning.
+    std::vector<CodebookSearch> searches{scalar_search};
+#if defined(TWINVQ_X86)
+    if (has_sse41()) searches.push_back(sse41_search);
+    if (has_avx2()) searches.push_back(avx2_search);
+#endif
+    constexpr int stride = 72, count = 12;
+    int16_t book[stride * count];
+    for (int i = 0; i < stride * count; ++i)
+        book[i] = static_cast<int16_t>(static_cast<int>(random() % 65536) - 32768);
+    std::copy_n(book, stride, book + stride);
+    for (int offset = 0; offset < 4; ++offset) for (int length = 1; length <= 65; ++length)
+        for (bool signed_code : {false, true}) {
+            const float full = scalar_error(target + offset, weight + offset, book + offset,
+                                             1, length, std::numeric_limits<float>::infinity());
+            for (float limit : {0.0f, full * 0.1f, full, std::numeric_limits<float>::infinity()}) {
+                CodebookMatch reference{limit, -1, 1};
+                for (int a = 0; a < count; ++a) for (int s = 0; s < (signed_code ? 2 : 1); ++s) {
+                    const int sign = s ? -1 : 1;
+                    const float error = scalar_error(target + offset, weight + offset,
+                        book + a * stride + offset, sign, length, reference.error);
+                    if (error < reference.error) reference = {error, a, sign};
+                }
+                for (auto search : searches) {
+                    const auto actual = search(target + offset, weight + offset, book + offset,
+                                                stride, length, count, signed_code, limit);
+                    if (actual.index != reference.index || actual.sign != reference.sign ||
+                        std::memcmp(&actual.error, &reference.error, sizeof(float)))
+                        throw std::runtime_error("Grouped SIMD search changed winner/error");
+                }
+            }
+        }
     std::cout << "SIMD kernels passed: scalar=1 sse41=" << has_sse41() << " avx2=" << has_avx2() << "\n";
     return 0;
 }

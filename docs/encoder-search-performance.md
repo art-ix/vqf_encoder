@@ -22,6 +22,22 @@ new runtime option is introduced.
   using the same float expressions instead of evaluating exponentials on
   every candidate fit. C++ local-static initialization is thread safe.
 
+## Grouped codebook searches
+
+Pair refinement and forward/reverse pair searches dispatch once per codebook
+scan, instead of making an indirect SIMD call for every candidate and sign.
+The SSE4.1 and AVX2 scans inline their ordered distance kernel inside the
+ISA-specific function; the scalar path implements the same interface.
+Candidates still run in their original order, with the incumbent error updated
+immediately. This preserves four-bin pruning, strict ties and the original
+floating-point summation. SIMD lanes continue to represent frequency bins;
+this change does not evaluate multiple candidates simultaneously.
+
+`--test-simd` checks grouped winners and errors against candidate-at-a-time
+scalar scans, including signs, duplicate entries, unaligned input, partial SIMD
+groups, and finite cutoffs that may reject every candidate. The existing
+encoder equivalence script checks complete output against a pre-change binary.
+
 ## Validation and reproduction
 
 Build a reference binary before the optimization and the candidate with the

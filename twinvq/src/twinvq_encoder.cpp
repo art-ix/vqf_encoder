@@ -1083,11 +1083,15 @@ void Encoder::quantize_vectors(const float* residual, const float* weights, Fram
     const int16_t* cb1 = ppc ? cb0 + cb_len * kPpcShapeCbSize : mtab_->fmode[fi].cb1;
     uint8_t* dst = ppc ? ppc_coeffs_ : main_coeffs_;
     detail::VectorError bounded_vector_error = detail::scalar_error;
+    detail::CodebookSearch search_codebook = detail::scalar_search;
 #if defined(TWINVQ_X86)
-    if (cfg_.simd == Simd::Avx2 || (cfg_.simd == Simd::Auto && detail::has_avx2()))
+    if (cfg_.simd == Simd::Avx2 || (cfg_.simd == Simd::Auto && detail::has_avx2())) {
         bounded_vector_error = detail::avx2_error;
-    else if (cfg_.simd == Simd::Sse41 || (cfg_.simd == Simd::Auto && detail::has_sse41()))
+        search_codebook = detail::avx2_search;
+    } else if (cfg_.simd == Simd::Sse41 || (cfg_.simd == Simd::Auto && detail::has_sse41())) {
         bounded_vector_error = detail::sse41_error;
+        search_codebook = detail::sse41_search;
+    }
 #endif
     const auto encode_range = [&](int begin, int end) {
         int pos = std::min(begin, static_cast<int>(length_change_[fi])) * length_[fi][0] +
@@ -1147,17 +1151,12 @@ void Encoder::quantize_vectors(const float* residual, const float* weights, Fram
                         const int sign = stage ? s0 : s1;
                         for (int j = 0; j < length; ++j) rest[j] = target[j] - sign * fixed[j];
                         const int16_t* cb = stage ? cb1 : cb0;
-                        for (int a = 0; a < (stage ? n1 : n0); ++a) {
-                            for (int s = 0; s < ((stage ? sign1_en : sign0_en) ? 2 : 1); ++s) {
-                                const int sg = s ? -1 : 1;
-                                const float e = bounded_vector_error(rest.data(), weight.data(), cb + a * cb_len,
-                                                                     sg, length, best_e);
-                                if (e < best_e) {
-                                    best_e = e;
-                                    if (stage) { best1 = a; s1 = sg; }
-                                    else { best0 = a; s0 = sg; }
-                                }
-                            }
+                        const auto match = search_codebook(rest.data(), weight.data(), cb,
+                            cb_len, length, stage ? n1 : n0, stage ? sign1_en : sign0_en, best_e);
+                        if (match.index >= 0) {
+                            best_e = match.error;
+                            if (stage) { best1 = match.index; s1 = match.sign; }
+                            else { best0 = match.index; s0 = match.sign; }
                         }
                     }
                 }
@@ -1166,18 +1165,12 @@ void Encoder::quantize_vectors(const float* residual, const float* weights, Fram
                 if (!beam_sign[slot]) continue;
                 const int16_t* t0 = cb0 + beam_index[slot] * cb_len;
                 for (int j = 0; j < length; ++j) rest[j] = target[j] - beam_sign[slot] * t0[j];
-                for (int b = 0; b < n1; b++) {
-                    const int16_t* t1 = cb1 + b * cb_len;
-                    for (int s = 0; s < (sign1_en ? 2 : 1); s++) {
-                        const int sg = (s == 0) ? 1 : -1;
-                        const float e = bounded_vector_error(rest.data(), weight.data(), t1,
-                                                             sg, length, best_e);
-                        if (e < best_e) {
-                            best_e = e;
-                            best0 = beam_index[slot]; s0 = beam_sign[slot];
-                            best1 = b; s1 = sg;
-                        }
-                    }
+                const auto match = search_codebook(rest.data(), weight.data(), cb1,
+                    cb_len, length, n1, sign1_en, best_e);
+                if (match.index >= 0) {
+                    best_e = match.error;
+                    best0 = beam_index[slot]; s0 = beam_sign[slot];
+                    best1 = match.index; s1 = match.sign;
                 }
                 // Refine each prefix of four and retain its winner. A wider beam
                 // includes the old four-candidate solution and cannot increase
@@ -1221,16 +1214,11 @@ void Encoder::quantize_vectors(const float* residual, const float* weights, Fram
                 if (!reverse_sign[slot]) continue;
                 for (int j = 0; j < length; ++j)
                     rest[j] = target[j] - reverse_sign[slot] * cb1[reverse_index[slot] * cb_len + j];
-                for (int a = 0; a < n0; ++a) {
-                    for (int sign = 0; sign < (sign0_en ? 2 : 1); ++sign) {
-                        const int sg = sign ? -1 : 1;
-                        const float e = bounded_vector_error(rest.data(), weight.data(), cb0 + a * cb_len,
-                                                             sg, length, best_e);
-                        if (e < best_e) {
-                            best_e = e; best0 = a; s0 = sg;
-                            best1 = reverse_index[slot]; s1 = reverse_sign[slot];
-                        }
-                    }
+                const auto match = search_codebook(rest.data(), weight.data(), cb0,
+                    cb_len, length, n0, sign0_en, best_e);
+                if (match.index >= 0) {
+                    best_e = match.error; best0 = match.index; s0 = match.sign;
+                    best1 = reverse_index[slot]; s1 = reverse_sign[slot];
                 }
                 if ((slot + 1) % 4 == 0 || slot + 1 == reverse_count) refine_pair();
             }
