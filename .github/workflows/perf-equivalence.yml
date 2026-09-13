@@ -84,3 +84,12 @@ jobs:
         run: |
           set -euo pipefail
           make test
+
+      - name: Upload Linux CLI
+        uses: actions/upload-artifact@v4
+        with:
+          name: vqf-linux-x64
+          path: |
+            bin/vqf_encode
+            bin/vqf_decode
+          retention-days: 7
