@@ -1543,14 +1543,40 @@ void Encoder::encode_frame(const float* interleaved_n, bool force_flush, bool ne
         temporal_error_state_ = trial_error_state;
         temporal_error_position_ = window_layout(*mtab_, ftype_, window_type_).output_size;
     };
+    // Every trial in this frame has the same target and prior LSP history.
+    // Bark/PPC/gain trials do not change LSP quantization inputs. Cache each
+    // channel/strategy result, including its committed predictor history.
+    // Local lifetime also covers temporal winner regeneration without allowing
+    // stale entries to survive a frame, block-mode or encoder-state change.
+    struct LspTrialResult {
+        bool ready = false;
+        uint8_t first = 0, split[kLspSplitMax]{}, prediction = 0;
+        float decoded[kLspCoefsMax]{}, history[kLspCoefsMax]{};
+    };
+    LspTrialResult lsp_results[kChannelsMax][3]{};
     auto trial = [&](const std::array<LspSearch, 2>& strategy, bool bark_search, bool ppc_search = false) {
         restore(lsp_hist_, prior_lsp);
         restore(bark_hist_, prior_bark);
         spec = original_spec;
         std::vector<float> rec_lsps(target_lsps.size());
-        for (int ch = 0; ch < channels_; ++ch)
-            quantize_lsp(ch, target_lsps.data() + ch * kLspCoefsMax,
-                         rec_lsps.data() + ch * kLspCoefsMax, strategy[ch]);
+        for (int ch = 0; ch < channels_; ++ch) {
+            auto& result = lsp_results[ch][static_cast<int>(strategy[ch])];
+            if (!result.ready) {
+                quantize_lsp(ch, target_lsps.data() + ch * kLspCoefsMax,
+                             result.decoded, strategy[ch]);
+                result.first = lpc_idx1_[ch];
+                std::memcpy(result.split, lpc_idx2_[ch], sizeof(result.split));
+                result.prediction = lpc_hist_idx_[ch];
+                std::memcpy(result.history, lsp_hist_[ch], sizeof(result.history));
+                result.ready = true;
+            } else {
+                lpc_idx1_[ch] = result.first;
+                std::memcpy(lpc_idx2_[ch], result.split, sizeof(result.split));
+                lpc_hist_idx_[ch] = result.prediction;
+                std::memcpy(lsp_hist_[ch], result.history, sizeof(result.history));
+            }
+            std::copy_n(result.decoded, mtab_->n_lsp, rec_lsps.data() + ch * kLspCoefsMax);
+        }
         // Identical transmitted LSP parameters from identical prior histories
         // lead to the same reconstruction. Avoid repeating expensive VQ work.
         TrialKey key{};

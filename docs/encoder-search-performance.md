@@ -150,9 +150,11 @@ bin/vqf_encode --test-codec-ppc-time
 ```
 
 The equivalence script generates synthetic PCM in a temporary directory and
-compares complete VQF bytes. Its four cases cover mono with LSP/Bark searches
-disabled, default stereo, Medium blocks with masking, and adaptive blocks with
-masking/PPC/temporal ranking; beam sizes 4, 8, 16 (auto) and 32 are exercised.
+compares complete VQF bytes. Its six cases cover mono with LSP/Bark searches
+disabled, default stereo, Medium blocks with masking, adaptive blocks with
+masking/PPC/temporal ranking, and voice protection with Long and adaptive
+blocks; beam sizes 4, 8, 16 (auto) and 32 are exercised. Both executables must
+support the voice-protection option.
 It prints single-run timings as a local smoke benchmark, not a portable speed
 guarantee. The codec suites cover all legal modes in mono/stereo, chunking,
 flush, silence, duration and existing quality/pre-echo gates.
@@ -161,7 +163,7 @@ Byte equality is tested on the same build platform. It is not a promise of
 identical output across compilers or floating-point architectures. Windows CI
 also exercises the codec regressions.
 
-## Additional cache experiments (not retained)
+## Earlier cache experiments
 
 Two further memoization approaches were evaluated against the retained encoder.
 Both preserved complete output bytes in the limited equivalence checks, but
@@ -177,8 +179,29 @@ neither established a useful overall speed improvement:
   overhead outweighed the saved distance work on the checked music cases; an
   adaptive synthetic case also regressed.
 
-Neither cache is present in the retained implementation. This result applies
-to the bounded-distance encoder: avoiding repeated arithmetic is not sufficient
+At that stage neither cache was retained. The combined LSP/PPC cache and
+codebook-pair cache remain absent. This result applies to that version of
+the bounded-distance encoder: avoiding repeated arithmetic is not sufficient
 when many of those distances already exit early. Further performance changes
 should be guided by measured hot paths and include complete encode timings,
 not just counts of skipped computations.
+
+
+## LSP result reuse after voice refinement
+
+The opt-in voice mode added decoded split refinement and a denser low/midband
+spectral grid. Repeated LSP quantization is consequently worth evaluating again.
+The retained implementation now reuses LSP results within a single frame,
+indexed by channel and the three search strategies. It stores all transmitted
+LSP indices, decoded coefficients and the resulting predictor history.
+
+Every candidate starts from the same frame target and prior history, so Bark,
+PPC and gain variants can reuse these results exactly. Mixed mid/side strategies
+reuse each channel independently. Temporal winner regeneration also uses the
+same entries. The cache is local to `encode_frame`; no entry survives to another
+frame, flush or encoder instance. No PPC or pair-distance cache was added.
+
+This optimization preserves the search space, arithmetic of each LSP search,
+quality settings and bitstream. Validation compares complete bytes with and
+without voice protection, including adaptive blocks and temporal ranking.
+Private reference material and its measurements are not distributed.
