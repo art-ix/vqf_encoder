@@ -57,6 +57,12 @@ jobs:
             fi
           done
 
+      - name: Synthetic voice and fricative diagnostic
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/benchmark_voice_synthetic.py bin/vqf_encode bin/vqf_decode
+
       - name: Full regression suite
         shell: bash
         run: |
