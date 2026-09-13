@@ -29,8 +29,9 @@ then /USEPROFILE. GCC provides -fprofile-generate and -fprofile-use, and -flto
 for interprocedural optimization. Evaluate these as separate build experiments
 with current floating-point constraints preserved. A training corpus should
 cover mono/stereo, block modes and SIMD paths using redistributable synthetic
-inputs; do not publish private audio or its profile data. PGO has not been
-implemented by the current kernel change.
+inputs; do not publish private audio or its profile data. An optional GCC experiment is now available through
+[`tools/build_pgo.py`](../tools/build_pgo.py); see [build details](gcc-pgo.md).
+The Windows release workflow and LTO remain separate experiments.
 
 ## 3. Speech-oriented LSP proposal weights
 

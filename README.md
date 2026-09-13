@@ -52,6 +52,10 @@ Linux (this tree): `make -j && make test` (g++ 12+, C++17). Objects live in
 `obj/`; codebook tables compile at `-O0` so incremental encoder rebuilds skip
 the 575 KB table TU.
 
+Optional GCC profile-guided build: `python3 tools/build_pgo.py`. It produces
+`bin/vqf_encode_pgo` after synthetic training and byte-equivalence checks; see
+[PGO build details](docs/gcc-pgo.md). Standard and Windows builds are unchanged.
+
 ## foobar2000 SDK (component build)
 
 1. Download the SDK from https://www.foobar2000.org/SDK
