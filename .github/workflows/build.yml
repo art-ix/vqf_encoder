@@ -86,6 +86,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python tools/test_tonal_protection.py bin/x64/Release/vqf_encode.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tools/test_stereo_noise_protection.py bin/x64/Release/vqf_encode.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python tools/test_vq_options.py bin/x64/Release/vqf_encode.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           .\bin\x64\Release\vqf_encode.exe --test-roundtrip 0.4

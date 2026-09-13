@@ -17,5 +17,9 @@ void tonal_noise_weights(const float* spectrum, int n, int channels,
 bool psychoacoustic_self_test();
 bool sibilant_self_test();
 bool tonal_noise_self_test();
+// Bounded relative-error protection of a weaker M/S band; mono is unchanged.
+bool stereo_noise_self_test();
+void stereo_noise_weights(const float* spectrum, int n, int channels,
+                          int sample_rate, float* weights);
 
 } // namespace twinvq

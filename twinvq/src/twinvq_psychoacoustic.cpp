@@ -92,6 +92,87 @@ void psychoacoustic_weights(const float* spectrum, int n, int channels,
     }
 }
 
+// A weak M/S component can have audible relative noise even when its absolute
+// error contributes little to ordinary L/R squared error. This is an explicit
+// spatial-error preference, not an assumption about interaural masking.
+void stereo_noise_weights(const float* spectrum, int n, int channels,
+                          int sample_rate, float* weights) {
+    if (channels != 2) return;
+    std::array<std::array<double, 2>, kBands> energy{};
+    std::vector<int> ids(n);
+    double total = 0;
+    for (int i = 0; i < n; ++i) {
+        ids[i] = std::min(kBands - 1, static_cast<int>(bark((i + 0.5) * sample_rate / (2.0 * n))));
+        for (int ch = 0; ch < 2; ++ch) {
+            const double x = spectrum[ch * n + i];
+            energy[ids[i]][ch] += x * x;
+            total += x * x;
+        }
+    }
+    if (!(total > 1e-60) || !std::isfinite(total)) return;
+    const double floor = total * 1e-10;
+    std::array<std::array<double, 2>, kBands> factors{};
+    for (int b = 0; b < kBands; ++b) {
+        const double ref = std::max(energy[b][0], energy[b][1]);
+        for (int ch = 0; ch < 2; ++ch)
+            factors[b][ch] = std::clamp(std::sqrt(ref / std::max(energy[b][ch], floor)), 1.0, 4.0);
+    }
+    for (int i = 0; i < n; ++i) {
+        const double hz = (i + 0.5) * sample_rate / (2.0 * n);
+        const double taper = std::clamp((hz - 1000.0) / 1500.0, 0.0, 1.0);
+        for (int ch = 0; ch < 2; ++ch) {
+            const double relative = factors[ids[i]][ch];
+            weights[ch * n + i] *= static_cast<float>(1.0 + taper * (relative - 1.0));
+        }
+    }
+}
+
+bool stereo_noise_self_test() {
+    constexpr int n = 2048;
+    std::vector<float> spectrum(2 * n), weights(2 * n, 1), other(2 * n);
+    stereo_noise_weights(spectrum.data(), n, 2, 44100, weights.data());
+    for (float w : weights) if (w != 1) return false;
+    std::fill(spectrum.begin(), spectrum.end(), 1);
+    stereo_noise_weights(spectrum.data(), n, 2, 44100, weights.data());
+    for (float w : weights) if (w != 1) return false;
+    std::fill(spectrum.begin() + n, spectrum.end(), 0.1f);
+    stereo_noise_weights(spectrum.data(), n, 1, 44100, weights.data());
+    for (float w : weights) if (w != 1) return false;
+    stereo_noise_weights(spectrum.data(), n, 2, 44100, weights.data());
+    for (int i = 0; i < n; ++i) {
+        const double hz = (i + 0.5) * 44100 / (2.0 * n);
+        if (weights[i] != 1 || !std::isfinite(weights[n + i]) ||
+            weights[n + i] < 1 || weights[n + i] > 4) return false;
+        if (hz <= 1000 && weights[n + i] != 1) return false;
+        if (hz >= 2500 && weights[n + i] != 4) return false;
+    }
+    for (float factor : {-1.0f, 1.0f / 65536.0f, 65536.0f}) {
+        auto scaled = spectrum;
+        for (float& x : scaled) x *= factor;
+        std::fill(other.begin(), other.end(), 1);
+        stereo_noise_weights(scaled.data(), n, 2, 44100, other.data());
+        for (int i = 0; i < 2 * n; ++i)
+            if (std::fabs(other[i] - weights[i]) > 1e-5f) return false;
+    }
+    // Ear swap negates S; composition must multiply preceding weights.
+    for (int i = n; i < 2 * n; ++i) spectrum[i] *= -1;
+    std::fill(other.begin(), other.end(), 0.5f);
+    stereo_noise_weights(spectrum.data(), n, 2, 44100, other.data());
+    for (int i = 0; i < 2 * n; ++i)
+        if (other[i] != weights[i] * 0.5f) return false;
+    // Protect weak M identically: antiphase content must not be biased.
+    for (int i = 0; i < n; ++i) std::swap(spectrum[i], spectrum[n + i]);
+    std::fill(other.begin(), other.end(), 1);
+    stereo_noise_weights(spectrum.data(), n, 2, 44100, other.data());
+    for (int i = 0; i < n; ++i)
+        if (other[i] != weights[n + i] || other[n + i] != weights[i]) return false;
+    std::fill(spectrum.begin(), spectrum.end(), 0);
+    std::fill(other.begin(), other.end(), 1);
+    stereo_noise_weights(spectrum.data(), n, 2, 44100, other.data());
+    for (float w : other) if (w != 1) return false;
+    return true;
+}
+
 // Experimental protection against noise between partials of tonal spectra.
 // Analyze original M/S energy; the same factor in M and S preserves ear symmetry.
 void tonal_noise_weights(const float* spectrum, int n, int channels,
