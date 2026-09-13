@@ -288,6 +288,24 @@ TWINVQ_INLINE_TARGET("avx2") __m256 avx2_add_candidate_bin(__m256 errors,
     return _mm256_add_ps(errors, term);
 }
 
+// Fast path for complete groups of eight candidates.
+TWINVQ_INLINE_TARGET("avx2") __m256 avx2_candidate_errors8(const float* target,
+        const float* weight, const float* values, int length, float limit) {
+    __m256 errors = _mm256_setzero_ps();
+    const __m256 cutoff = _mm256_set1_ps(limit);
+    int j = 0;
+    for (; j + 4 <= length; j += 4) {
+        errors = avx2_add_candidate_bin(errors, target[j], weight[j], values + j * 8);
+        errors = avx2_add_candidate_bin(errors, target[j+1], weight[j+1], values + (j+1) * 8);
+        errors = avx2_add_candidate_bin(errors, target[j+2], weight[j+2], values + (j+2) * 8);
+        errors = avx2_add_candidate_bin(errors, target[j+3], weight[j+3], values + (j+3) * 8);
+        if (!_mm256_movemask_ps(_mm256_cmp_ps(errors, cutoff, _CMP_LT_OQ))) return errors;
+    }
+    for (; j < length; ++j)
+        errors = avx2_add_candidate_bin(errors, target[j], weight[j], values + j * 8);
+    return errors;
+}
+
 // Each lane preserves scalar bin order; the mask excludes padded candidates.
 TWINVQ_INLINE_TARGET("avx2") __m256 avx2_candidate_errors(const float* target,
         const float* weight, const float* values, int length, int lanes, float limit) {
@@ -320,8 +338,9 @@ TWINVQ_TARGET("avx2") inline CodebookMatch avx2_candidates(const float* target,
     for (int first = 0; first < entries; first += 8) {
         const int lanes = std::min(8, entries - first);
         const float* values = packed + (first / 8) * book.stride * 8;
-        const __m256 group_errors = avx2_candidate_errors(target, weight, values,
-                                                          length, lanes, best.error);
+        const __m256 group_errors = lanes == 8
+            ? avx2_candidate_errors8(target, weight, values, length, best.error)
+            : avx2_candidate_errors(target, weight, values, length, lanes, best.error);
         const int lane_mask = (1 << lanes) - 1;
         const int better_mask = _mm256_movemask_ps(_mm256_cmp_ps(
             group_errors, _mm256_set1_ps(best.error), _CMP_LT_OQ)) & lane_mask;
