@@ -31,6 +31,11 @@ for every LSP/Bark strategy. Save the winning PPC fields together with the
 other frame fields and histories. Temporal ranking, when enabled, evaluates
 these final candidates and regenerates the selected PPC state before writing.
 
+After Bark/VQ keep-best, Long frames refit PPC to the leftover
+`original/env - bark * vq`. The three highest leftover-energy periods per
+channel (including the current period) are shape-quantized with locked
+periods. The previous PPC triple is restored unless weighted MDCT error falls.
+
 ## Limits
 
 This is a bounded search: every period is ranked, but only one period proposal

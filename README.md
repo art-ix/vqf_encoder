@@ -296,7 +296,9 @@ See [time-domain ranking](docs/time-domain-ranking.md).
 `--ppc-search` searches Long-frame PPC (periodic components) parameters using
 existing format fields. It proposes a period for each channel, jointly quantizes
 the shape and fits transmitted gains, then compares the complete reconstruction
-with the existing fixed-PPC candidate. Short and Medium frames have no PPC fields.
+with the existing fixed-PPC candidate. After the frame winner is known, PPC is
+refitted to the leftover after main VQ unless reconstruction error would rise.
+Short and Medium frames have no PPC fields.
 
 PPC search is enabled by default on `encoder-quality`; disable it with
 `--no-ppc-search` or `Encoder::Config::ppc_search = false`. It can be combined with masking weights,

@@ -1470,6 +1470,141 @@ void Encoder::refine_subblock_bark_vq(const float* original_spec, const float* p
     restore_bytes(bark_hist_, best_hist);
 }
 
+void Encoder::refine_long_ppc(const float* original_spec, const float* perceptual,
+                              const float* prior_lsp, const float* prior_bark) {
+    if (ftype_ != FrameType::Long) return;
+    const int n = mtab_->size;
+    const auto& mode = mtab_->fmode[static_cast<int>(FrameType::Long)];
+    const int n_period = 1 << mtab_->ppc_period_bit;
+    if (ppc_position_cache_.empty()) {
+        for (int p = 0; p < n_period; ++p)
+            ppc_position_cache_.push_back(ppc_positions(p));
+    }
+
+    std::vector<float> env(static_cast<size_t>(channels_) * n, 1.0f);
+    for (int ch = 0; ch < channels_; ++ch) {
+        float hist[kLspCoefsMax], rec[kLspCoefsMax];
+        std::memcpy(hist, prior_lsp + ch * kLspCoefsMax, sizeof(float) * static_cast<size_t>(mtab_->n_lsp));
+        decode_lsp(lpc_idx1_[ch], lpc_idx2_[ch], lpc_hist_idx_[ch], rec, hist);
+        dec_lpc_spectrum_inv(rec, FrameType::Long, env.data() + ch * n);
+    }
+
+    std::vector<float> vq(static_cast<size_t>(channels_) * n);
+    dequant(main_coeffs_, vq.data(), FrameType::Long, mode.cb0, mode.cb1, mode.cb_len_read);
+
+    auto snapshot_bytes = [](const auto& value) {
+        std::array<unsigned char, sizeof(value)> copy;
+        std::memcpy(copy.data(), &value, sizeof(value));
+        return copy;
+    };
+    auto restore_bytes = [](auto& value, const auto& copy) {
+        std::memcpy(&value, copy.data(), sizeof(value));
+    };
+    const auto saved_ppc = snapshot_bytes(ppc_coeffs_);
+    const auto saved_period = snapshot_bytes(p_coef_);
+    const auto saved_gain = snapshot_bytes(g_coef_);
+    const auto saved_hist = snapshot_bytes(bark_hist_);
+
+    std::vector<float> bark(static_cast<size_t>(channels_) * n, 1.0f);
+    float gtmp[kChannelsMax * kSubblocksMax];
+    std::memcpy(bark_hist_, prior_bark, sizeof(bark_hist_));
+    dec_gain(FrameType::Long, gtmp);
+    for (int ch = 0; ch < channels_; ++ch)
+        dec_bark_env(bark1_[ch][0], bark_use_hist_[ch][0], ch, bark.data() + ch * n, gtmp[ch],
+                     FrameType::Long);
+    restore_bytes(bark_hist_, saved_hist);
+
+    const int cb_len_p = (n_div_[3] + mtab_->ppc_shape_len * channels_ - 1) / n_div_[3];
+    std::vector<float> leftover(static_cast<size_t>(channels_) * n);
+    for (int ch = 0; ch < channels_; ++ch) {
+        for (int i = 0; i < n; ++i) {
+            const int k = ch * n + i;
+            const float e = std::max(env[k], 1.0e-6f);
+            leftover[k] = original_spec[k] / e - bark[k] * vq[k];
+        }
+    }
+
+    auto synth_error = [&]() {
+        std::vector<float> shape(static_cast<size_t>(mtab_->ppc_shape_len) * channels_);
+        dequant(ppc_coeffs_, shape.data(), FrameType::Ppc, mtab_->ppc_shape_cb,
+                mtab_->ppc_shape_cb + cb_len_p * kPpcShapeCbSize, cb_len_p);
+        double error = 0;
+        for (int ch = 0; ch < channels_; ++ch) {
+            std::vector<float> ppc(n, 0.0f);
+            decode_ppc(p_coef_[ch], g_coef_[ch], shape.data() + ch * mtab_->ppc_shape_len, ppc.data());
+            for (int i = 0; i < n; ++i) {
+                const int k = ch * n + i;
+                const double rec = env[k] * (static_cast<double>(bark[k]) * vq[k] + ppc[i]);
+                const double d = original_spec[k] - rec;
+                error += perceptual[k] * d * d;
+            }
+        }
+        return error;
+    };
+
+    double best_error = synth_error();
+    auto best_ppc = saved_ppc;
+    auto best_period = saved_period;
+    auto best_pgain = saved_gain;
+
+    constexpr int kPeriodCandidates = 3;
+    int proposal[kChannelsMax][kPeriodCandidates];
+    for (int ch = 0; ch < channels_; ++ch) {
+        double best_energy[kPeriodCandidates];
+        std::fill_n(best_energy, kPeriodCandidates, -1.0);
+        std::fill_n(proposal[ch], kPeriodCandidates, p_coef_[ch]);
+        for (int p = 0; p < n_period; ++p) {
+            double energy = 0;
+            for (int bin : ppc_position_cache_[p]) {
+                const int k = ch * n + bin;
+                energy += static_cast<double>(env[k]) * env[k] * perceptual[k] *
+                          leftover[k] * leftover[k];
+            }
+            for (int slot = 0; slot < kPeriodCandidates; ++slot) {
+                if (energy <= best_energy[slot]) continue;
+                for (int s = kPeriodCandidates - 1; s > slot; --s) {
+                    best_energy[s] = best_energy[s - 1];
+                    proposal[ch][s] = proposal[ch][s - 1];
+                }
+                best_energy[slot] = energy;
+                proposal[ch][slot] = p;
+                break;
+            }
+        }
+        bool has_current = false;
+        for (int slot = 0; slot < kPeriodCandidates; ++slot)
+            has_current |= proposal[ch][slot] == p_coef_[ch];
+        if (!has_current) proposal[ch][kPeriodCandidates - 1] = p_coef_[ch];
+    }
+
+    auto consider = [&](const int* periods) {
+        std::copy_n(periods, channels_, p_coef_);
+        quantize_ppc(leftover.data(), env.data(), perceptual, true);
+        const double error = synth_error();
+        if (error < best_error) {
+            best_error = error;
+            best_ppc = snapshot_bytes(ppc_coeffs_);
+            best_period = snapshot_bytes(p_coef_);
+            best_pgain = snapshot_bytes(g_coef_);
+        }
+    };
+
+    if (channels_ == 1) {
+        for (int i = 0; i < kPeriodCandidates; ++i)
+            consider(&proposal[0][i]);
+    } else {
+        for (int i = 0; i < kPeriodCandidates; ++i)
+            for (int j = 0; j < kPeriodCandidates; ++j) {
+                const int periods[2] = {proposal[0][i], proposal[1][j]};
+                consider(periods);
+            }
+    }
+
+    restore_bytes(ppc_coeffs_, best_ppc);
+    restore_bytes(p_coef_, best_period);
+    restore_bytes(g_coef_, best_pgain);
+}
+
 std::vector<int> Encoder::ppc_positions(int period_coef) const {
     const int min_period = rounded_div(40 * 2 * mtab_->size, isampf_);
     const int max_period = rounded_div(40 * 2 * mtab_->size * 6, isampf_);
@@ -1498,7 +1633,8 @@ std::vector<int> Encoder::ppc_positions(int period_coef) const {
     return positions;
 }
 
-void Encoder::quantize_ppc(const float* spec, const float* lpc_env, const float* perceptual) {
+void Encoder::quantize_ppc(const float* spec, const float* lpc_env, const float* perceptual,
+                           bool lock_period) {
     const int n = mtab_->size, len = mtab_->ppc_shape_len;
     if (ppc_position_cache_.empty()) {
         for (int p = 0; p < (1 << mtab_->ppc_period_bit); ++p)
@@ -1511,15 +1647,17 @@ void Encoder::quantize_ppc(const float* spec, const float* lpc_env, const float*
     // Rank every representable period by reconstructable weighted energy.
     // This is a period proposal; full-frame VQ decides whether it is useful.
     for (int ch = 0; ch < channels_; ++ch) {
-        double best = -1;
-        for (int p = 0; p < static_cast<int>(ppc_position_cache_.size()); ++p) {
-            double energy = 0;
-            for (int bin : ppc_position_cache_[p]) {
-                const int i = ch * n + bin;
-                const double x = static_cast<double>(spec[i]) * lpc_env[i];
-                energy += x * x * perceptual[i];
+        if (!lock_period) {
+            double best = -1;
+            for (int p = 0; p < static_cast<int>(ppc_position_cache_.size()); ++p) {
+                double energy = 0;
+                for (int bin : ppc_position_cache_[p]) {
+                    const int i = ch * n + bin;
+                    const double x = static_cast<double>(spec[i]) * lpc_env[i];
+                    energy += x * x * perceptual[i];
+                }
+                if (energy > best) { best = energy; p_coef_[ch] = p; }
             }
-            if (energy > best) { best = energy; p_coef_[ch] = p; }
         }
         double energy = 0;
         for (int bin : ppc_position_cache_[p_coef_[ch]]) {
@@ -2383,6 +2521,9 @@ void Encoder::encode_frame(const float* interleaved_n, bool force_flush, bool ne
         refine_long_bark_vq(original_spec.data(), perceptual.data(),
                             reinterpret_cast<const float*>(prior_lsp.data()),
                             reinterpret_cast<const float*>(prior_bark.data()));
+        refine_long_ppc(original_spec.data(), perceptual.data(),
+                        reinterpret_cast<const float*>(prior_lsp.data()),
+                        reinterpret_cast<const float*>(prior_bark.data()));
         write_frame_bits();
         frames_written_++;
         return;
@@ -2449,6 +2590,9 @@ void Encoder::encode_frame(const float* interleaved_n, bool force_flush, bool ne
         refine_long_bark_vq(original_spec.data(), perceptual.data(),
                             reinterpret_cast<const float*>(prior_lsp.data()),
                             reinterpret_cast<const float*>(prior_bark.data()));
+        refine_long_ppc(original_spec.data(), perceptual.data(),
+                        reinterpret_cast<const float*>(prior_lsp.data()),
+                        reinterpret_cast<const float*>(prior_bark.data()));
         write_frame_bits();
         frames_written_++;
         return;
@@ -2469,6 +2613,9 @@ void Encoder::encode_frame(const float* interleaved_n, bool force_flush, bool ne
     refine_long_bark_vq(original_spec.data(), perceptual.data(),
                         reinterpret_cast<const float*>(prior_lsp.data()),
                         reinterpret_cast<const float*>(prior_bark.data()));
+    refine_long_ppc(original_spec.data(), perceptual.data(),
+                    reinterpret_cast<const float*>(prior_lsp.data()),
+                    reinterpret_cast<const float*>(prior_bark.data()));
     write_frame_bits();
     frames_written_++;
 }

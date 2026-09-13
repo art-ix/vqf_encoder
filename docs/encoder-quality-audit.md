@@ -619,3 +619,26 @@ Linux diagnostics versus the adaptive default, two-second 44.1 kHz stereo /
 Early-attack pre-echo ratio versus forced Long improved from 0.451 to 0.404.
 Encode time was unchanged on these clips. `--test-codec` chirp scores were
 unchanged. These are waveform diagnostics, not listening results.
+
+
+## Implementation update: Long-frame PPC leftover refit
+
+PPC period was ranked on the original LPC-normalized spectrum before main VQ.
+After the frame winner is known, Long frames now rank a few leftover-energy
+periods on `original/env - bark * vq`, lock those periods, refit shape/gain,
+and keep the previous PPC triple unless weighted MDCT error falls. Short and
+Medium frames have no PPC fields.
+
+Linux diagnostics versus the previous default, two-second 44.1 kHz stereo /
+96 kbps clips:
+
+| Signal | Delta SNR (dB) |
+| --- | ---: |
+| tones, fade, identical, antiphase | 0.000 |
+| harmonics | +0.242 |
+| noise | +0.007 |
+| attacks, left-only | +0.000 |
+
+`--test-codec` 44.1 kHz stereo / 96 kbps chirp was unchanged. Encode time on
+these clips rose by a few percent. These are waveform diagnostics, not
+listening results.
