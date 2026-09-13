@@ -44,3 +44,25 @@ flush, silence, duration and existing quality/pre-echo gates.
 Byte equality is tested on the same build platform. It is not a promise of
 identical output across compilers or floating-point architectures. Windows CI
 also exercises the codec regressions.
+
+## Additional cache experiments (not retained)
+
+Two further memoization approaches were evaluated against the retained encoder.
+Both preserved complete output bytes in the limited equivalence checks, but
+neither established a useful overall speed improvement:
+
+- Per-frame LSP results indexed by channel/search strategy, plus PPC results
+  indexed by transmitted LSP parameters, removed repeated work across Bark/PPC
+  trials. End-to-end timing gains were small or absent across the checked cases.
+- Per-vector codebook-pair distance caches removed repeated VQ scoring during
+  refinement and reverse seeding. Separate entries preserved the two floating-
+  point subtraction orders, and entries distinguished complete errors from
+  lower bounds returned by pruning. Cache allocation, initialization and lookup
+  overhead outweighed the saved distance work on the checked music cases; an
+  adaptive synthetic case also regressed.
+
+Neither cache is present in the retained implementation. This result applies
+to the bounded-distance encoder: avoiding repeated arithmetic is not sufficient
+when many of those distances already exit early. Further performance changes
+should be guided by measured hot paths and include complete encode timings,
+not just counts of skipped computations.
