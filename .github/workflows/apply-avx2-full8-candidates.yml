@@ -1,0 +1,67 @@
+name: apply-avx2-full8-candidates
+
+on:
+  push:
+    branches: [encoder-quality]
+    paths: [.github/workflows/apply-avx2-full8-candidates.yml]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: Build baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          make -j2 all
+          cp bin/vqf_encode /tmp/vqf-encode-base
+      - name: Apply full-eight candidate fast path
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('twinvq/src/twinvq_simd.hpp')
+          s = p.read_text()
+          marker = '''// Each lane preserves scalar bin order; the mask excludes padded candidates.\nTWINVQ_INLINE_TARGET("avx2") __m256 avx2_candidate_errors'''
+          helper = '''// Fast path for complete groups of eight candidates.\nTWINVQ_INLINE_TARGET("avx2") __m256 avx2_candidate_errors8(const float* target,\n        const float* weight, const float* values, int length, float limit) {\n    __m256 errors = _mm256_setzero_ps();\n    const __m256 cutoff = _mm256_set1_ps(limit);\n    int j = 0;\n    for (; j + 4 <= length; j += 4) {\n        errors = avx2_add_candidate_bin(errors, target[j], weight[j], values + j * 8);\n        errors = avx2_add_candidate_bin(errors, target[j+1], weight[j+1], values + (j+1) * 8);\n        errors = avx2_add_candidate_bin(errors, target[j+2], weight[j+2], values + (j+2) * 8);\n        errors = avx2_add_candidate_bin(errors, target[j+3], weight[j+3], values + (j+3) * 8);\n        if (!_mm256_movemask_ps(_mm256_cmp_ps(errors, cutoff, _CMP_LT_OQ))) return errors;\n    }\n    for (; j < length; ++j)\n        errors = avx2_add_candidate_bin(errors, target[j], weight[j], values + j * 8);\n    return errors;\n}\n\n'''
+          if s.count(marker) != 1:
+              raise SystemExit(f'expected one helper insertion marker, got {s.count(marker)}')
+          s = s.replace(marker, helper + marker, 1)
+          old = '''        const __m256 group_errors = avx2_candidate_errors(target, weight, values,\n                                                          length, lanes, best.error);\n'''
+          new = '''        const __m256 group_errors = lanes == 8\n            ? avx2_candidate_errors8(target, weight, values, length, best.error)\n            : avx2_candidate_errors(target, weight, values, length, lanes, best.error);\n'''
+          if s.count(old) != 1:
+              raise SystemExit(f'expected one candidate call, got {s.count(old)}')
+          p.write_text(s.replace(old, new, 1))
+          PY
+          git diff --check
+      - name: Verify candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          make -j2 all
+          ./bin/vqf_encode --test-simd
+          ./bin/vqf_encode --test-codec-search
+          for pass in 1 2 3 4; do
+            echo "=== equivalence timing pass $pass ==="
+            if (( pass % 2 )); then
+              python3 tools/test_encoder_equivalence.py /tmp/vqf-encode-base bin/vqf_encode
+            else
+              python3 tools/test_encoder_equivalence.py bin/vqf_encode /tmp/vqf-encode-base
+            fi
+          done
+      - name: Commit tested optimization
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "Artix"
+          git config user.email "60628557+art-ix@users.noreply.github.com"
+          git add twinvq/src/twinvq_simd.hpp
+          git commit -m "Specialize full AVX2 candidate groups"
+          git push origin HEAD:encoder-quality
