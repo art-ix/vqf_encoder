@@ -56,3 +56,9 @@ jobs:
                 /tmp/vqf-parent/bin/vqf_encode bin/vqf_encode
             fi
           done
+
+      - name: Full regression suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          make test
