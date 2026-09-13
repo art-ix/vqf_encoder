@@ -281,19 +281,31 @@ TWINVQ_TARGET("avx2") inline void avx2_beam(const float* target, const float* we
     }
 }
 
+TWINVQ_INLINE_TARGET("avx2") __m256 avx2_add_candidate_bin(__m256 errors,
+        float target, float weight, const float* values) {
+    const __m256 d = _mm256_sub_ps(_mm256_set1_ps(target), _mm256_loadu_ps(values));
+    const __m256 term = _mm256_mul_ps(_mm256_mul_ps(_mm256_set1_ps(weight), d), d);
+    return _mm256_add_ps(errors, term);
+}
+
 // Each lane preserves scalar bin order; the mask excludes padded candidates.
 TWINVQ_INLINE_TARGET("avx2") __m256 avx2_candidate_errors(const float* target,
         const float* weight, const float* values, int length, int lanes, float limit) {
     const int mask = (1 << lanes) - 1;
     __m256 errors = _mm256_setzero_ps();
     const __m256 cutoff = _mm256_set1_ps(limit);
-    for (int j = 0; j < length; ++j) {
-        const __m256 d = _mm256_sub_ps(_mm256_set1_ps(target[j]), _mm256_loadu_ps(values + j * 8));
-        const __m256 term = _mm256_mul_ps(_mm256_mul_ps(_mm256_set1_ps(weight[j]), d), d);
-        errors = _mm256_add_ps(errors, term);
-        if ((j + 1) % 4 == 0 &&
-            !(_mm256_movemask_ps(_mm256_cmp_ps(errors, cutoff, _CMP_LT_OQ)) & mask)) break;
+    int j = 0;
+    // Unroll exactly one pruning interval, preserving every lane's original
+    // accumulation order and the same cutoff boundaries. No reassociation/FMA.
+    for (; j + 4 <= length; j += 4) {
+        errors = avx2_add_candidate_bin(errors, target[j], weight[j], values + j * 8);
+        errors = avx2_add_candidate_bin(errors, target[j+1], weight[j+1], values + (j+1) * 8);
+        errors = avx2_add_candidate_bin(errors, target[j+2], weight[j+2], values + (j+2) * 8);
+        errors = avx2_add_candidate_bin(errors, target[j+3], weight[j+3], values + (j+3) * 8);
+        if (!(_mm256_movemask_ps(_mm256_cmp_ps(errors, cutoff, _CMP_LT_OQ)) & mask)) return errors;
     }
+    for (; j < length; ++j)
+        errors = avx2_add_candidate_bin(errors, target[j], weight[j], values + j * 8);
     return errors;
 }
 

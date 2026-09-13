@@ -226,3 +226,29 @@ and removes the separate per-trial decoded-LSP vector.
 Validation uses complete-byte comparisons with the previous encoder for six
 synthetic configurations, including protected adaptive/temporal search. The
 optimization does not change quality weights, search width or transmitted bits.
+
+
+## AVX2 pruning-interval unrolling
+
+The packed-candidate distance kernel now explicitly processes four frequency
+bins before testing its existing cutoff. Each SIMD lane still represents one
+candidate, and all additions and multiplications retain the original order.
+There are no independent partial sums or fused multiply-add substitutions.
+The remaining one to three bins use the same single-bin helper. Padded lanes
+remain excluded from pruning; candidate selection and tie handling are unchanged.
+The same helper serves both codebook scans and beam initialization.
+
+Existing SIMD checks compare partial lengths, signed candidates, ties,
+unaligned input, padded groups and beam results against the scalar path.
+Full-stream equivalence also checks optional voice protection and temporal
+ranking. Gains must be measured on the actual compiler/CPU: unrolling is not
+universally beneficial and increases code size.
+
+A separate attempt to cache joint PPC results across Bark alternatives was
+retested after the voice changes. It preserved output bytes but did not
+establish a timing benefit and was removed. Profiling then directed attention
+to the packed AVX2 searches. Private recordings and profiling measurements
+are not included in this repository.
+
+See [optimization research](optimization-research.md) for primary-source
+references and the remaining proposed experiments.
