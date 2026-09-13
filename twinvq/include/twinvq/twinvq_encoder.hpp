@@ -36,8 +36,8 @@ public:
         bool psychoacoustic = false;
         // Experimental protection of broadband high-frequency consonant energy.
         bool sibilant_protection = false;
-        // Experimental fixed or transient-adaptive blocks; Long remains default.
-        BlockMode block_mode = BlockMode::Long;
+        // Transient-adaptive Long/Short; Long remains available via --block-mode.
+        BlockMode block_mode = BlockMode::Adaptive;
         // Experimental time-domain ranking of existing frame candidates.
         bool temporal_search = false;
         // Experimental period, shape and gain search in Long frames.

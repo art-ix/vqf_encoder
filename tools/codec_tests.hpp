@@ -94,16 +94,25 @@ int test_codec(bool lsp_search = twinvq::Encoder::Config{}.lsp_search,
                 ppc_frames += nonzero;
             }
         }
+        int previous_window = 0;
         for (int f = 0; f < whole.frames_written(); ++f) {
             int window = 0;
             for (int k = 0; k < twinvq::kWindowTypeBits; ++k) {
                 const size_t b = static_cast<size_t>(f) * whole.frame_bits() + k;
                 window = window * 2 + ((whole.data().at(b / 8) >> (7 - b % 8)) & 1);
             }
-            const bool short_mode = blocks == twinvq::Encoder::BlockMode::Short;
-            const int expected = blocks == twinvq::Encoder::BlockMode::Long || f == 0 ? 0
-                               : f == whole.frames_written() - 1 ? (short_mode ? 3 : 5) : (short_mode ? 2 : 8);
-            if (window != expected) throw std::runtime_error("incorrect fixed-block window schedule");
+            if (blocks == twinvq::Encoder::BlockMode::Adaptive) {
+                if ((window != 0 && window != 2 && window != 3) ||
+                    (previous_window == 2 && window == 0) ||
+                    (window == 3 && previous_window != 2))
+                    throw std::runtime_error("illegal adaptive window transition");
+            } else {
+                const bool short_mode = blocks == twinvq::Encoder::BlockMode::Short;
+                const int expected = blocks == twinvq::Encoder::BlockMode::Long || f == 0 ? 0
+                                   : f == whole.frames_written() - 1 ? (short_mode ? 3 : 5) : (short_mode ? 2 : 8);
+                if (window != expected) throw std::runtime_error("incorrect fixed-block window schedule");
+            }
+            previous_window = window;
         }
         int pos = 0;
         const int chunks[] = {1, 3, hop - 1, hop + 5};
@@ -135,7 +144,7 @@ int test_codec(bool lsp_search = twinvq::Encoder::Config{}.lsp_search,
             throw std::runtime_error("roundtrip quality/gain regression");
         // This deterministic chirp previously scored about 27 dB with angular
         // LSP search alone. Protect the spectral candidate's measured gain.
-        if (blocks == twinvq::Encoder::BlockMode::Long && lsp_search && cfg.sample_rate == 16000 && channels == 1 && snr < 30)
+        if (lsp_search && cfg.sample_rate == 16000 && channels == 1 && snr < 30)
             throw std::runtime_error("spectral LSP quality regression");
         twinvq::Encoder silent(cfg);
         std::fill(pcm.begin(), pcm.end(), 0.0f);
@@ -149,9 +158,11 @@ int test_codec(bool lsp_search = twinvq::Encoder::Config{}.lsp_search,
     if (bark_search ? history_flags == 0 : history_flags != 0)
         throw std::runtime_error("Bark history flags do not exercise the requested mode");
     std::cout << "transmitted Bark history flags=" << history_flags << "\n";
-    if (ppc_search ? ppc_frames == 0 : ppc_frames != 0)
-        throw std::runtime_error("PPC trailer does not exercise the requested mode");
-    std::cout << "nonzero PPC frames=" << ppc_frames << "\n";
+    if (blocks == twinvq::Encoder::BlockMode::Long) {
+        if (ppc_search ? ppc_frames == 0 : ppc_frames != 0)
+            throw std::runtime_error("PPC trailer does not exercise the requested mode");
+        std::cout << "nonzero PPC frames=" << ppc_frames << "\n";
+    }
     std::cout << "codec regression tests passed\n";
     return 0;
 }

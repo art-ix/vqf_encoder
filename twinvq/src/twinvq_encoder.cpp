@@ -1590,7 +1590,9 @@ void Encoder::fit_subblock_gains(int ch, const double* target, const double* wei
 
 void Encoder::mdct_channel(int ch, const float* time_2n, float* spec_n) {
     const int n = mtab_->size;
-    if (cfg_.block_mode != BlockMode::Long) {
+    // Long/Long frames use the same sine-window MDCT as the default encoder.
+    // Transition and Short/Medium layouts need the pair analysis.
+    if (window_type_ != 0 || next_window_type_ != 0) {
         const auto layout = window_layout(*mtab_, ftype_, window_type_);
         const auto next = window_layout(*mtab_, window_frame_type(next_window_type_), next_window_type_);
         std::vector<float> half(n), time(2 * layout.block_size);
@@ -2258,8 +2260,14 @@ unsigned Encoder::detect_attack(const float* pcm) {
             }
             energy /= block;
             high /= block;
-            if (energy > 8.0 * std::max(attack_energy_[ch], 1.0e-10)
-                || high > 12.0 * std::max(attack_high_energy_[ch], 1.0e-10)) {
+            const double silence = 1.0e-8;
+            const bool from_silence = attack_energy_[ch] < silence && attack_high_energy_[ch] < silence;
+            // Onset from digital silence has no audible pre-echo. The leading
+            // delay hop is zeros, so treating it as an attack would force Short
+            // frames at the start of every encode.
+            if (!from_silence &&
+                (energy > 8.0 * std::max(attack_energy_[ch], 1.0e-10)
+                 || high > 12.0 * std::max(attack_high_energy_[ch], 1.0e-10))) {
                 // A Short frame covers the latter part of one PCM hop and
                 // the early part of the next. Keep both near the boundary:
                 // energy is localized only to this analysis slice.

@@ -130,7 +130,7 @@ void usage() {
               << "  --no-psychoacoustic disable masking weights\n"
               << "  --sibilant-protection experimental broadband treble protection (default: off)\n"
               << "  --no-sibilant-protection disable treble protection\n"
-              << "  --block-mode MODE  blocks: long (default), short, medium, adaptive\n"
+              << "  --block-mode MODE  blocks: adaptive (default), long, short, medium\n"
               << "  --threads N        auto (default) or 1..32 VQ workers\n"
               << "  --simd MODE        auto, scalar, sse41 or avx2\n"
               << "  --ppc-search       harmonic period/shape/gain search (default)\n"

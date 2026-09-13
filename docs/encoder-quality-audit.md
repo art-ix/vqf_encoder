@@ -572,3 +572,28 @@ The 44.1 kHz stereo / 96 kbps chirp in `--test-codec` rose from 36.63 to
 43.11 dB. Encode time is roughly 2x on the harder clips because different
 spectral LSP indices reach full VQ. `--no-lsp-search` disables the new
 ranking. These are waveform diagnostics, not listening results.
+
+
+## Implementation update: adaptive blocks as default
+
+Two default-path problems kept adaptive from being used on every encode:
+
+- The leading delay hop is digital silence. Comparing the first audio hop
+  with a `1e-10` envelope always looked like an attack, so Short frames
+  started every file, including steady tones.
+- Adaptive Long/Long frames used pair-analysis MDCT instead of the sine
+  window of `--block-mode long`, so even attack-free files differed.
+
+Onset from silence is no longer an attack. Type-0/type-0 frames share the
+Long MDCT. Linux diagnostics versus the previous Long default, two-second
+44.1 kHz stereo / 96 kbps clips:
+
+| Signal | Delta SNR (dB) |
+| --- | ---: |
+| tones, harmonics, noise, fade, identical, antiphase, left-only | 0.000 |
+| attacks | -0.092 |
+
+The dedicated early-attack pre-echo fixture still measures 0.45× pre-attack
+energy versus forced Long. `--block-mode long` restores the previous path.
+`--test-codec` chirp scores were unchanged (no Short frames on that sweep).
+These are waveform diagnostics, not listening results.

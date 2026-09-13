@@ -1,15 +1,15 @@
 # Transient block switching: implementation prerequisites
 
-Status: experimental fixed short/medium encoding and adaptive Long/Short
-scheduling are implemented. Long remains the default; tuning and listening
-validation of adaptive quality remain pending.
+Status: fixed short/medium encoding and adaptive Long/Short scheduling are
+implemented. Adaptive is the default: Long frames until a transient, then
+Short. `--block-mode long` restores the previous path.
 
 ## Fixed-block implementation
 
-Use `--block-mode short` or `--block-mode medium`; the default is `long`.
+Use `--block-mode short` or `--block-mode medium`; the default is `adaptive`.
 The C++ API exposes `Encoder::Config::block_mode` with `Encoder::BlockMode`.
-Native integrations retain the Long default. These are evaluation modes,
-not a recommendation to encode an entire music track with short windows.
+Fixed short blocks are evaluation modes, not a recommendation to encode an
+entire music track with short windows.
 
 - Production analysis transposes decoder overlap/copy operations using two
   adjacent PCM hops and the next window geometry. It is compared against the
@@ -105,6 +105,8 @@ rise. This avoids extending Short runs solely because the reference has not
 caught up. Initial trigger ratios are
 8 and 12 respectively, with a numerical floor of `1e-10`. They are heuristics,
 not calibrated hearing thresholds. No channel averaging hides side attacks.
+Onset from digital silence (including the leading delay hop) does not count
+as an attack: there is no audible pre-echo into preceding silence.
 
 A one-hop queue gives the scheduler the upcoming attack regions. Each frame
 honors the window already used by the previous frame's analysis; only its
@@ -118,14 +120,14 @@ to cover the onset region. This avoids sacrificing frequency resolution in
 an adjacent frame that does not contain the onset. EOF retains the existing
 closure policy rather than scheduling a new Short flush frame.
 
-The final buffered hop is
-encoded before the zero flush hop, which closes any Short overlap with 3.
-Medium selection is intentionally deferred; its fixed mode remains available.
+When both the current and next windows are type 0, analysis uses the same
+sine-window MDCT as `--block-mode long`. Transition and Short layouts use
+pair analysis.
 
 The extra buffering is one hop, reported by `lookahead_samples()` and CLI.
 It does not add output samples or another priming frame. Memory is bounded,
 and irregular feed calls make the same decisions as whole-buffer input.
-The default Long path bypasses both the queue and detector.
+`--block-mode long` bypasses both the queue and detector.
 
 The window oracle includes repeated Short exits/reentries. The targeted
 adaptive codec suite covers stereo 80/96 kbps, early/central/late side-only
@@ -133,8 +135,8 @@ attacks, transmitted window placement, release,
 window legality, chunking, decoded length, short/empty input and pre-attack
 energy with an attack-gain guard. External FFmpeg decoding is also checked
 on synthetic and private local inputs. Private audio and measurements stay
-outside Git. Adaptive mode remains experimental: lower pre-echo can trade
-off against other reconstruction errors; no listening improvement is claimed.
+outside Git. Lower pre-echo can still trade off against other reconstruction
+errors; no listening improvement is claimed.
 
 
 The central-attack test retains its pre-echo improvement gate. A late tonal
