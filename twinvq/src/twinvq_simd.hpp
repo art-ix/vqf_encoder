@@ -341,40 +341,36 @@ TWINVQ_TARGET("avx2") inline CodebookMatch avx2_candidates(const float* target,
 TWINVQ_TARGET("avx2") inline void avx2_candidate_beam(const float* target,
         const float* weight, const PackedCodebook& book, int length, int count,
         bool signed_code, int beam_size, int* indices, int* signs) {
-    float errors[32];
-    std::fill_n(errors, beam_size, 1.0e30f);
-    std::fill_n(indices, beam_size, 0);
-    std::fill_n(signs, beam_size, 0);
+    struct BeamEntry { float error; int index; int sign; };
+    BeamEntry beam[32];
+    std::fill_n(beam, beam_size, BeamEntry{1.0e30f, 0, 0});
     const float* packed = signed_code ? book.signed_values.data() : book.positive.data();
     const int entries = count * (signed_code ? 2 : 1);
     for (int first = 0; first < entries; first += 8) {
         const int lanes = std::min(8, entries - first);
         const float* values = packed + (first / 8) * book.stride * 8;
         const __m256 group_errors = avx2_candidate_errors(target, weight, values,
-                                                          length, lanes, errors[beam_size - 1]);
+                                                          length, lanes, beam[beam_size - 1].error);
         const int lane_mask = (1 << lanes) - 1;
         const int better_mask = _mm256_movemask_ps(_mm256_cmp_ps(
-            group_errors, _mm256_set1_ps(errors[beam_size - 1]), _CMP_LT_OQ)) & lane_mask;
+            group_errors, _mm256_set1_ps(beam[beam_size - 1].error), _CMP_LT_OQ)) & lane_mask;
         if (!better_mask) continue;
         float error[8];
         _mm256_storeu_ps(error, group_errors);
         // Stable insertion restores scalar candidate order after parallel scoring.
         for (int lane = 0; lane < lanes; ++lane) {
-            if (error[lane] >= errors[beam_size - 1]) continue;
+            if (error[lane] >= beam[beam_size - 1].error) continue;
             const int entry = first + lane;
-            for (int slot = 0; slot < beam_size; ++slot) {
-                if (error[lane] >= errors[slot]) continue;
-                for (int k = beam_size - 1; k > slot; --k) {
-                    errors[k] = errors[k - 1];
-                    indices[k] = indices[k - 1];
-                    signs[k] = signs[k - 1];
-                }
-                errors[slot] = error[lane];
-                indices[slot] = signed_code ? entry / 2 : entry;
-                signs[slot] = signed_code && entry % 2 ? -1 : 1;
-                break;
-            }
+            const int slot = static_cast<int>(std::upper_bound(beam, beam + beam_size,
+                error[lane], [](float value, const BeamEntry& item) { return value < item.error; }) - beam);
+            std::move_backward(beam + slot, beam + beam_size - 1, beam + beam_size);
+            beam[slot] = {error[lane], signed_code ? entry / 2 : entry,
+                          signed_code && entry % 2 ? -1 : 1};
         }
+    }
+    for (int i = 0; i < beam_size; ++i) {
+        indices[i] = beam[i].index;
+        signs[i] = beam[i].sign;
     }
 }
 #endif
