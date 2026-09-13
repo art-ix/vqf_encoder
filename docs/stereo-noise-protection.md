@@ -6,8 +6,8 @@ centered signal, poorly reconstructed side information can sound like a
 separate noisy stereo component. This hypothesis is distinct from pre-echo
 and inter-partial noise; it does not explain every audible artifact.
 
-`Encoder::Config::stereo_noise_protection` defaults to false; this is an
-opt-in experiment pending matched-level listening. The CLI provides
+`Encoder::Config::stereo_noise_protection` defaults to true, enabled at the
+user's request after the experimental comparison. The CLI provides
 `--stereo-noise-protection` and `--no-stereo-noise-protection`. Disabling it
 restores the previous search objective; tonal and broadband protection retain
 their independent settings. Mono is unchanged.

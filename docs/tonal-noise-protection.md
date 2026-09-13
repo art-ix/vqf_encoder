@@ -8,8 +8,10 @@ possible artifact, and forcing Short blocks can worsen tonal reconstruction.
 
 `Encoder::Config::tonal_protection` is enabled by default. The CLI accepts
 `--tonal-protection` and `--no-tonal-protection`; the latter restores the
-previous objective. The independent
-[stereo noise protection](stereo-noise-protection.md) is opt-in. It is independent of the opt-in `--psychoacoustic` and
+previous tonal objective. The independent
+[stereo noise protection](stereo-noise-protection.md) also defaults to on;
+disable both protections to reproduce the pre-tonal objective. Tonal protection
+is independent of the opt-in `--psychoacoustic` and
 `--sibilant-protection` options. Native clients using the default Config also
 receive the protection.
 

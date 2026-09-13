@@ -4,7 +4,8 @@ Enable with `--psychoacoustic` or `Encoder::Config::psychoacoustic = true`.
 The simultaneous-masking model defaults to off. The independent
 [tonal noise protection](tonal-noise-protection.md) defaults to on; disable it
 with `--no-tonal-protection` when reproducing the older unweighted objective.
-The independent [stereo protection](stereo-noise-protection.md) remains opt-in.
+The independent [stereo protection](stereo-noise-protection.md) also defaults
+to on; use `--no-stereo-noise-protection` for that older-objective comparison.
 Native integrations follow the same Config defaults.
 
 This first model estimates relative frequency masking. It does not implement

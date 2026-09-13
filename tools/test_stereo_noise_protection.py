@@ -41,7 +41,7 @@ def main():
                 subprocess.run([exe, '-b', str(bitrate), *flags, str(source), str(dest)],
                                check=True, capture_output=True)
                 outputs[name] = dest.read_bytes()
-            assert outputs['default'] == outputs['off'], 'protection must remain opt-in'
+            assert outputs['default'] == outputs['on'], 'default must enable protection'
             assert outputs['off'] == outputs['reset'], 'explicit disable must win'
             assert outputs['on'] != outputs['off'], 'harmonic input must exercise protection'
             assert outputs['scalar'] == outputs['parallel'] == outputs['on'], 'execution paths differ'

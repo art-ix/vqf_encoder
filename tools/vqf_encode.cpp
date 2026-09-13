@@ -127,7 +127,7 @@ void usage() {
               << "  --lsp-search        enable frame-scored LSP search (default)\n"
               << "  --no-bark-search    disable Bark/history search\n"
               << "  --no-lsp-search     disable LSP search\n"
-              << "  --stereo-noise-protection protect weak M/S bands (default: off)\n"
+              << "  --stereo-noise-protection protect weak M/S bands (default: on)\n"
               << "  --no-stereo-noise-protection disable stereo noise protection\n"
               << "  --tonal-protection  protect tonal treble against quantization noise (default: on)\n"
               << "  --no-tonal-protection disable tonal protection\n"

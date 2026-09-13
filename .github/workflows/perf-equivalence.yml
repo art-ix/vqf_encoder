@@ -21,10 +21,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Psychoacoustic tuning is expected to alter protected bitstreams.
+          # Psychoacoustic tuning and protection-default changes intentionally
+          # alter bitstreams. All regression tests still run.
           # Speed-only changes remain subject to strict byte equivalence and
           # alternating A/B timings against their direct parent.
-          if git diff --quiet HEAD^ HEAD -- twinvq/src/twinvq_psychoacoustic.cpp; then
+          if git diff --unified=0 HEAD^ HEAD -- twinvq/include/twinvq/twinvq_encoder.hpp |
+              grep -E '^[+-][[:space:]]*bool stereo_noise_protection =' > /dev/null; then
+            echo "require_equivalence=false" >> "$GITHUB_OUTPUT"
+          elif git diff --quiet HEAD^ HEAD -- twinvq/src/twinvq_psychoacoustic.cpp; then
             echo "require_equivalence=true" >> "$GITHUB_OUTPUT"
           else
             echo "require_equivalence=false" >> "$GITHUB_OUTPUT"

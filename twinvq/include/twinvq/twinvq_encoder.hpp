@@ -39,7 +39,7 @@ public:
         // Protect tonal treble against inter-partial quantization noise.
         bool tonal_protection = true;
         // Experimental relative-noise protection of weak mid/side bands.
-        bool stereo_noise_protection = false;
+        bool stereo_noise_protection = true;
         // Transient-adaptive Long/Short; Long remains available via --block-mode.
         BlockMode block_mode = BlockMode::Adaptive;
         // Experimental time-domain ranking of existing frame candidates.
