@@ -865,6 +865,25 @@ void Encoder::quantize_lsp(int ch, const float* target_lsp, float* rec_out, LspS
             }
         }
     }
+    // The split shortlist above uses angular distance. Refine the selected
+    // spectral candidate with the actual decoded envelope objective, including
+    // predictor history and stabilization, before committing its history.
+    if (cfg_.sibilant_protection && search == LspSearch::Spectral) {
+        for (int part = 0; part < mtab_->lsp_split; ++part) {
+            const uint8_t original = selected2[part];
+            uint8_t winner = original;
+            for (int index = 0; index < n2; ++index) {
+                if (index == original) continue;
+                selected2[part] = static_cast<uint8_t>(index);
+                float history[kLspCoefsMax], rec[kLspCoefsMax];
+                std::memcpy(history, saved_hist, sizeof(float) * order);
+                decode_lsp(selected1, selected2, best0, rec, history);
+                const float error = lsp_error(rec);
+                if (error < best_e) { best_e = error; winner = static_cast<uint8_t>(index); }
+            }
+            selected2[part] = winner;
+        }
+    }
     lpc_idx1_[ch] = static_cast<uint8_t>(selected1);
     std::memcpy(lpc_idx2_[ch], selected2, sizeof(selected2));
     lpc_hist_idx_[ch] = static_cast<uint8_t>(best0);

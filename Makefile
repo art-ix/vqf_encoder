@@ -51,6 +51,7 @@ test: all
 	./bin/vqf_encode --test-codec-ppc
 	./bin/vqf_encode --test-codec-parallel
 	python3 tools/test_parallel_options.py bin/vqf_encode
+	python3 tools/test_voice_protection.py bin/vqf_encode
 	./bin/vqf_encode --test-codec-ppc-time
 	./bin/vqf_encode --test-codec-psychoacoustic
 	./bin/vqf_encode --test-codec-lsp

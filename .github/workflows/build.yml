@@ -82,6 +82,7 @@ jobs:
           .\bin\x64\Release\vqf_encode.exe --test-codec-parallel
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python tools/test_parallel_options.py bin/x64/Release/vqf_encode.exe
+          python tools/test_voice_protection.py bin/x64/Release/vqf_encode.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python tools/test_vq_options.py bin/x64/Release/vqf_encode.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

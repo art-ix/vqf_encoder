@@ -145,3 +145,20 @@ Beam 32 is a separate search-quality/cost choice; the protection option also
 works with the automatic beam. Existing defaults remain unchanged. The
 `--test-mdct` checks include silence, tonal rejection, broadband activation,
 weight bounds, gain/polarity/ear symmetry and composition with prior weights.
+
+
+### Decoded LSP split refinement
+
+With broadband protection enabled, the spectral LSP candidate now performs
+one coordinate pass over its split-codebook indices. Each trial is decoded
+with a private copy of predictor history and scored using the existing
+mean-removed log-envelope distance. Only strict improvements are accepted;
+only the winning indices update the persistent history. Basic and angular
+frame candidates remain available to the final reconstruction-error search.
+
+This addresses a mismatch in the spectral search: split indices were
+previously proposed only by angular distance, even though decoded envelope
+distance ranked the completed candidates. The refinement costs extra CPU
+and does not guarantee lower final PCM error: the LSP envelope is an
+intermediate objective and later frames also depend on its history.
+It remains tied to the opt-in protection mode and respects `--no-lsp-search`.
