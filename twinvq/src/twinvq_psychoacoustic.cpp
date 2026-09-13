@@ -35,8 +35,6 @@ std::array<double, kBands> thresholds(const std::vector<double>& power,
         const double mean = bands[b].energy / bands[b].count;
         const double flatness = std::clamp(std::exp(bands[b].logs / bands[b].count) /
                                            std::max(mean, floor), 1.0e-12, 1.0);
-        // Initial heuristic: flat noise allows a larger error than a tone.
-        // These constants are tunable, not measured hearing thresholds.
         const double tonal = std::clamp(-std::log10(flatness) / 3.0, 0.0, 1.0);
         masker[b] = mean * std::pow(10.0, -(6.0 + 12.0 * tonal) / 10.0);
         bands[b].center /= bands[b].count;
@@ -47,7 +45,6 @@ std::array<double, kBands> thresholds(const std::vector<double>& power,
         for (int m = 0; m < kBands; ++m) {
             if (!bands[m].count) continue;
             const double distance = bands[b].center - bands[m].center;
-            // Conservative maximum, not a sum of many overlapping maskers.
             const double attenuation = std::fabs(distance) * (distance >= 0 ? 12.0 : 27.0);
             result[b] = std::max(result[b], masker[m] * std::pow(10.0, -attenuation / 10.0));
         }
@@ -71,8 +68,6 @@ void psychoacoustic_weights(const float* spectrum, int n, int channels,
         position[i] = bark((i + 0.5) * sample_rate / (2.0 * n));
         band_id[i] = std::min(kBands - 1, static_cast<int>(position[i]));
     }
-    // Silence has no reliable relative masking estimate. Double precision
-    // keeps squared float MDCT coefficients and gain changes well behaved.
     if (!(energy > 1.0e-60) || !std::isfinite(energy)) return;
     const double floor = energy / (2 * n) * 1.0e-12;
     const auto l = thresholds(left, band_id, position, floor);
@@ -81,10 +76,6 @@ void psychoacoustic_weights(const float* spectrum, int n, int channels,
     for (int i = 0; i < n; ++i) reference += std::min(l[band_id[i]], r[band_id[i]]);
     reference /= n;
     for (int i = 0; i < n; ++i) {
-        // Use the stricter ear and identical M/S weights. This avoids assuming
-        // interaural masking or dropping cross terms from unequal L/R weights.
-        // Fourth-root compression limits the tradeoff against ordinary squared
-        // error. The largest relative weight ratio is four, rather than sixteen.
         const double threshold = std::min(l[band_id[i]], r[band_id[i]]);
         const float w = static_cast<float>(std::clamp(std::sqrt(std::sqrt(reference / threshold)), 0.5, 2.0));
         weights[i] = w;
@@ -92,9 +83,6 @@ void psychoacoustic_weights(const float* spectrum, int n, int channels,
     }
 }
 
-// Relative broadband detector, not a speech/phoneme recognizer. Equal M/S
-// weights avoid inventing interaural masking. The input weights may already
-// include the optional simultaneous-masking model.
 void sibilant_weights(const float* spectrum, int n, int channels,
                       int sample_rate, float* weights) {
     if (sample_rate < 16000) return;
@@ -126,9 +114,9 @@ void sibilant_weights(const float* spectrum, int n, int channels,
                              std::clamp((upper + 1000.0 - hz) / 2000.0, 0.0, 1.0);
         const double voice_band = std::clamp((hz - 150.0) / 350.0, 0.0, 1.0) *
                                   std::clamp((3500.0 - hz) / 1000.0, 0.0, 1.0);
-        // Keep the maximum emphasis unchanged while moving a small amount of
-        // protection from the broad voice guard toward the fricative band.
-        const float emphasis = static_cast<float>(1.0 + activity * (2.10 * taper + 0.65 * voice_band));
+        // Experimental stronger reallocation. Peak emphasis is unchanged:
+        // 2.25 + 0.50 == the original 2.00 + 0.75 overlap maximum.
+        const float emphasis = static_cast<float>(1.0 + activity * (2.25 * taper + 0.50 * voice_band));
         for (int ch = 0; ch < channels; ++ch) weights[ch * n + i] *= emphasis;
     }
 }
@@ -138,7 +126,6 @@ bool sibilant_self_test() {
     std::vector<float> spectrum(2 * n), weights(2 * n, 1), other(2 * n);
     sibilant_weights(spectrum.data(), n, 2, 44100, weights.data());
     for (float w : weights) if (w != 1) return false;
-    // Isolated tones, including treble, must not trigger broadband protection.
     for (int bin : {40, 500}) {
         spectrum[bin] = 1;
         sibilant_weights(spectrum.data(), n, 2, 44100, weights.data());
@@ -163,7 +150,6 @@ bool sibilant_self_test() {
         for (int i = 0; i < 2 * n; ++i)
             if (std::fabs(other[i] - weights[i]) > 1e-5f) return false;
     }
-    // An ear swap negates S; existing weights must be multiplied, not replaced.
     for (int i = n; i < 2 * n; ++i) spectrum[i] *= -1;
     std::fill(other.begin(), other.end(), 0.5f);
     sibilant_weights(spectrum.data(), n, 2, 44100, other.data());
@@ -188,7 +174,6 @@ bool psychoacoustic_self_test() {
     for (int i = 0; i < n; ++i)
         if (!std::isfinite(weights[i]) || weights[i] < 0.5f || weights[i] > 2.0f ||
             weights[i] != weights[n + i]) return false;
-    // Overall gain and polarity must not change a relative masking model.
     for (float factor : {-1.0f, 1.0f / 65536.0f, 65536.0f}) {
         auto scaled = spectrum;
         for (float& x : scaled) x *= factor;
@@ -196,18 +181,15 @@ bool psychoacoustic_self_test() {
         for (int i = 0; i < 2 * n; ++i)
             if (std::fabs(other[i] - weights[i]) > 1.0e-5f) return false;
     }
-    // Swapping the ears is a side polarity change.
     for (int i = n; i < 2 * n; ++i) spectrum[i] *= -1;
     psychoacoustic_weights(spectrum.data(), n, 2, 44100, other.data());
     if (weights != other) return false;
-    // Equal band energy: a concentrated tone must mask less than flat noise.
     std::vector<double> tonal(32, 0), noise(32, 1), position(32, 5.5);
     std::vector<int> id(32, 5);
     tonal[16] = 32;
     const auto tone_mask = thresholds(tonal, id, position, 1e-12);
     const auto noise_mask = thresholds(noise, id, position, 1e-12);
     if (!(tone_mask[5] < noise_mask[5] * 0.1)) return false;
-    // A masker may affect nearby bands, with a smaller effect farther away.
     tonal.assign(3, 0); tonal[0] = 1;
     id = {5, 6, 8}; position = {5.5, 6.5, 8.5};
     const auto spread = thresholds(tonal, id, position, 1e-12);
