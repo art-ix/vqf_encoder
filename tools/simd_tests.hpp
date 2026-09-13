@@ -115,6 +115,19 @@ int test_simd() {
                     for (const float* weights : {static_cast<const float*>(weight), static_cast<const float*>(zero_weights)}) {
                         const float full = scalar_error(target + offset, weights + offset,
                             packed_source + offset, 1, length, std::numeric_limits<float>::infinity());
+                        for (int size : {4, 8, 16, 32}) {
+                            int reference_indices[32], reference_signs[32], indices[34], signs_out[34];
+                            std::fill_n(indices, 34, -99); std::fill_n(signs_out, 34, -99);
+                            scalar_beam(target + offset, weights + offset, packed_source + offset,
+                                        stride, length, entries, signs, size, reference_indices, reference_signs);
+                            avx2_candidate_beam(target + offset, weights + offset, packed,
+                                                length, entries, signs, size, indices + 1, signs_out + 1);
+                            if (indices[0] != -99 || indices[size + 1] != -99 ||
+                                signs_out[0] != -99 || signs_out[size + 1] != -99 ||
+                                !std::equal(indices + 1, indices + 1 + size, reference_indices) ||
+                                !std::equal(signs_out + 1, signs_out + 1 + size, reference_signs))
+                                throw std::runtime_error("Candidate-lane AVX2 changed beam order or bounds");
+                        }
                         for (float limit : {0.0f, full * 0.7f, full, std::numeric_limits<float>::infinity()}) {
                             const auto reference = scalar_search(target + offset, weights + offset,
                                 packed_source + offset, stride, length, entries, signs, limit);

@@ -49,9 +49,13 @@ pruning uses the incumbent at group entry, which is a safe but sometimes looser
 cutoff than the previous per-candidate scan. This trades some extra arithmetic
 for parallel accumulators and fewer candidate-loop iterations.
 
-Beam seeding retains its existing kernel. The runtime SIMD selection and the
-scalar/SSE4.1 fallbacks are unchanged. The extended SIMD test, encoder byte
-comparison and full codec/parallel suites cover the new path.
+Forward and reverse beam seeding also use this packed layout and share the
+ordered eight-candidate scoring helper with pair searches. Beam insertion
+remains sequential and stable; its last entry supplies the group cutoff.
+The runtime SIMD selection and scalar/SSE4.1 fallbacks are unchanged. The SIMD
+test compares packed beam order and output boundaries against scalar selection
+for widths 4/8/16/32, including partial candidate groups and ties. Encoder byte
+comparisons and codec/parallel suites exercise the integrated path.
 
 ## Grouped beam seeding
 

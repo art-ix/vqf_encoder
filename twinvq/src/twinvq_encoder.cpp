@@ -1125,6 +1125,17 @@ void Encoder::quantize_vectors(const float* residual, const float* weights, Fram
 #endif
         return search_codebook(target, weight, code, stride, length, count, signs, limit);
     };
+    const auto select_beam = [&](const float* target, const float* weight, const int16_t* code,
+            int stride, int length, int count, bool signs, int size, int* indices, int* signs_out) {
+#if defined(TWINVQ_X86)
+        if (candidate_lanes) {
+            detail::avx2_candidate_beam(target, weight, code == cb0 ? *packed0 : *packed1,
+                                       length, count, signs, size, indices, signs_out);
+            return;
+        }
+#endif
+        search_beam(target, weight, code, stride, length, count, signs, size, indices, signs_out);
+    };
     const auto encode_range = [&](int begin, int end) {
         int pos = std::min(begin, static_cast<int>(length_change_[fi])) * length_[fi][0] +
                   std::max(0, begin - static_cast<int>(length_change_[fi])) * length_[fi][1];
@@ -1160,7 +1171,7 @@ void Encoder::quantize_vectors(const float* residual, const float* weights, Fram
             // so LPC peaks do not amplify otherwise small quantization errors.
             const int beam_size = cfg_.vq_beam;
             int beam_index[32], beam_sign[32];
-            search_beam(target.data(), weight.data(), cb0, cb_len, length,
+            select_beam(target.data(), weight.data(), cb0, cb_len, length,
                         n0, sign0_en, beam_size, beam_index, beam_sign);
             int scanned_index[2]{}, scanned_sign[2]{};
             float scanned_bound[2]{};
@@ -1233,7 +1244,7 @@ void Encoder::quantize_vectors(const float* residual, const float* weights, Fram
             const float forward_error = best_e;
             constexpr int reverse_beam = 8;
             int reverse_index[reverse_beam], reverse_sign[reverse_beam];
-            search_beam(target.data(), weight.data(), cb1, cb_len, length,
+            select_beam(target.data(), weight.data(), cb1, cb_len, length,
                         n1, sign1_en, reverse_beam, reverse_index, reverse_sign);
             best_e = 1.0e30f;
             best0 = best1 = 0; s0 = s1 = 1;

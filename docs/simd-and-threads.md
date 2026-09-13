@@ -50,13 +50,15 @@ standard library threading implementation, without an OpenMP dependency.
 
 ## SIMD work
 
-SSE4.1 evaluates four weighted distance terms at a time. AVX2 beam seeding
-uses eight terms at a time, retaining scalar accumulation and the four-term
-cutoff. AVX2 codebook scans instead evaluate eight candidates simultaneously:
+SSE4.1 evaluates four weighted distance terms at a time. AVX2 codebook scans
+and forward/reverse beam seeding evaluate eight candidates simultaneously:
 each lane accumulates one candidate's error in the original bin order.
 Candidate selection still follows the original index/sign order with strict
 ties. A shared cutoff can reject the whole group after four-bin checkpoints;
 it may do extra work compared with updating the cutoff after every candidate.
+For beam seeding, the cutoff is the current last beam entry. Stable insertion
+then visits the eight scores in original index/sign order, preserving ties and
+empty slots when fewer candidates than the requested beam width are available.
 
 For those scans, the caller prepares transposed float codebooks containing
 positive entries and interleaved positive/negative entries. Each caller thread

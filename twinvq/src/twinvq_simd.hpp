@@ -281,6 +281,22 @@ TWINVQ_TARGET("avx2") inline void avx2_beam(const float* target, const float* we
     }
 }
 
+// Each lane preserves scalar bin order; the mask excludes padded candidates.
+TWINVQ_INLINE_TARGET("avx2") __m256 avx2_candidate_errors(const float* target,
+        const float* weight, const float* values, int length, int lanes, float limit) {
+    const int mask = (1 << lanes) - 1;
+    __m256 errors = _mm256_setzero_ps();
+    const __m256 cutoff = _mm256_set1_ps(limit);
+    for (int j = 0; j < length; ++j) {
+        const __m256 d = _mm256_sub_ps(_mm256_set1_ps(target[j]), _mm256_loadu_ps(values + j * 8));
+        const __m256 term = _mm256_mul_ps(_mm256_mul_ps(_mm256_set1_ps(weight[j]), d), d);
+        errors = _mm256_add_ps(errors, term);
+        if ((j + 1) % 4 == 0 &&
+            !(_mm256_movemask_ps(_mm256_cmp_ps(errors, cutoff, _CMP_LT_OQ)) & mask)) break;
+    }
+    return errors;
+}
+
 // Each lane sums one candidate in scalar bin order. A group may do extra
 // arithmetic because its shared cutoff is updated only after ordered selection.
 TWINVQ_TARGET("avx2") inline CodebookMatch avx2_candidates(const float* target,
@@ -291,19 +307,9 @@ TWINVQ_TARGET("avx2") inline CodebookMatch avx2_candidates(const float* target,
     const int entries = count * (signed_code ? 2 : 1);
     for (int first = 0; first < entries; first += 8) {
         const int lanes = std::min(8, entries - first);
-        const int mask = (1 << lanes) - 1;
         const float* values = packed + (first / 8) * book.stride * 8;
-        __m256 errors = _mm256_setzero_ps();
-        const __m256 cutoff = _mm256_set1_ps(best.error);
-        for (int j = 0; j < length; ++j) {
-            const __m256 d = _mm256_sub_ps(_mm256_set1_ps(target[j]), _mm256_loadu_ps(values + j * 8));
-            const __m256 term = _mm256_mul_ps(_mm256_mul_ps(_mm256_set1_ps(weight[j]), d), d);
-            errors = _mm256_add_ps(errors, term);
-            if ((j + 1) % 4 == 0 &&
-                !(_mm256_movemask_ps(_mm256_cmp_ps(errors, cutoff, _CMP_LT_OQ)) & mask)) break;
-        }
         float error[8];
-        _mm256_storeu_ps(error, errors);
+        _mm256_storeu_ps(error, avx2_candidate_errors(target, weight, values, length, lanes, best.error));
         for (int lane = 0; lane < lanes; ++lane) {
             const int entry = first + lane;
             if (error[lane] < best.error)
@@ -312,6 +318,41 @@ TWINVQ_TARGET("avx2") inline CodebookMatch avx2_candidates(const float* target,
         }
     }
     return best;
+}
+
+TWINVQ_TARGET("avx2") inline void avx2_candidate_beam(const float* target,
+        const float* weight, const PackedCodebook& book, int length, int count,
+        bool signed_code, int beam_size, int* indices, int* signs) {
+    float errors[32];
+    std::fill_n(errors, beam_size, 1.0e30f);
+    std::fill_n(indices, beam_size, 0);
+    std::fill_n(signs, beam_size, 0);
+    const float* packed = signed_code ? book.signed_values.data() : book.positive.data();
+    const int entries = count * (signed_code ? 2 : 1);
+    for (int first = 0; first < entries; first += 8) {
+        const int lanes = std::min(8, entries - first);
+        const float* values = packed + (first / 8) * book.stride * 8;
+        float error[8];
+        _mm256_storeu_ps(error, avx2_candidate_errors(target, weight, values, length,
+                                                     lanes, errors[beam_size - 1]));
+        // Stable insertion restores scalar candidate order after parallel scoring.
+        for (int lane = 0; lane < lanes; ++lane) {
+            if (error[lane] >= errors[beam_size - 1]) continue;
+            const int entry = first + lane;
+            for (int slot = 0; slot < beam_size; ++slot) {
+                if (error[lane] >= errors[slot]) continue;
+                for (int k = beam_size - 1; k > slot; --k) {
+                    errors[k] = errors[k - 1];
+                    indices[k] = indices[k - 1];
+                    signs[k] = signs[k - 1];
+                }
+                errors[slot] = error[lane];
+                indices[slot] = signed_code ? entry / 2 : entry;
+                signs[slot] = signed_code && entry % 2 ? -1 : 1;
+                break;
+            }
+        }
+    }
 }
 #endif
 } // namespace twinvq::detail
