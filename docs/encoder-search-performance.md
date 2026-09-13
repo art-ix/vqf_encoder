@@ -54,6 +54,16 @@ scalar distances for widths 4/8/16/32. Coverage includes duplicate codebook
 entries, zero-weight ties, signs, vector tails, unaligned inputs, fewer
 candidates than beam slots and output-boundary sentinels.
 
+## Converged pair refinement
+
+After a complete coordinate-refinement pass (both codebooks), stop if the
+incumbent error did not decrease. Pair indices and signs update only on strict
+improvement, so an unchanged error means the next pass would repeat the same
+inputs, comparisons and result. The check uses the exact float value, with no
+epsilon or approximate convergence threshold. Forward/reverse beam candidates
+and prefix refinement calls are still evaluated as before; only a redundant
+second pass is removed. This applies to both main VQ and PPC shape VQ.
+
 ## Reusable VQ scratch buffers
 
 The three temporary float vectors used by each range are now thread-local.

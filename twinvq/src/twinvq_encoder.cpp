@@ -1137,6 +1137,7 @@ void Encoder::quantize_vectors(const float* residual, const float* weights, Fram
                         n0, sign0_en, beam_size, beam_index, beam_sign);
             auto refine_pair = [&]() {
                 for (int pass = 0; pass < 2; ++pass) {
+                    const float initial_error = best_e;
                     for (int stage = 0; stage < 2; ++stage) {
                         const int16_t* fixed = stage ? cb0 + best0 * cb_len : cb1 + best1 * cb_len;
                         const int sign = stage ? s0 : s1;
@@ -1150,6 +1151,9 @@ void Encoder::quantize_vectors(const float* residual, const float* weights, Fram
                             else { best0 = match.index; s0 = match.sign; }
                         }
                     }
+                    // Strict improvements are the only state updates. If neither
+                    // coordinate improved, another pass has identical inputs.
+                    if (best_e == initial_error) break;
                 }
             };
             for (int slot = 0; slot < beam_size; ++slot) {
