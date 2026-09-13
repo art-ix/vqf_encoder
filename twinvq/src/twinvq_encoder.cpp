@@ -889,7 +889,7 @@ void Encoder::quantize_lsp(int ch, const float* target_lsp, float* rec_out, LspS
         // envelope mean enough to alter an earlier split's optimum. Do one
         // bounded extra coordinate sweep and stop immediately if it is stable.
         for (int refinement = 0; refinement < 2; ++refinement) {
-            bool improved = false;
+            bool revisit_earlier = false;
             for (int part = 0; part < mtab_->lsp_split; ++part) {
                 const uint8_t original = selected2[part];
                 uint8_t winner = original;
@@ -904,9 +904,11 @@ void Encoder::quantize_lsp(int ch, const float* target_lsp, float* rec_out, LspS
                     if (error < best_e) { best_e = error; winner = static_cast<uint8_t>(index); }
                 }
                 selected2[part] = winner;
-                improved |= best_e < before;
+                // Only a change after part 0 can invalidate an earlier part's
+                // already-completed coordinate search in this sweep.
+                revisit_earlier |= best_e < before && part > 0;
             }
-            if (!improved) break;
+            if (!revisit_earlier) break;
         }
     }
     lpc_idx1_[ch] = static_cast<uint8_t>(selected1);
