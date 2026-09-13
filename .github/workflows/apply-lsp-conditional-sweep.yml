@@ -1,0 +1,89 @@
+name: apply-lsp-conditional-sweep
+
+on:
+  push:
+    branches: [encoder-quality]
+    paths: [.github/workflows/apply-lsp-conditional-sweep.yml]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Apply conditional second LSP sweep
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('twinvq/src/twinvq_encoder.cpp')
+          s = p.read_text()
+          old = '''        for (int refinement = 0; refinement < 2; ++refinement) {
+            bool improved = false;
+            for (int part = 0; part < mtab_->lsp_split; ++part) {
+                const uint8_t original = selected2[part];
+                uint8_t winner = original;
+                const float before = best_e;
+                for (int index = 0; index < n2; ++index) {
+                    if (index == original) continue;
+                    selected2[part] = static_cast<uint8_t>(index);
+                    float history[kLspCoefsMax], rec[kLspCoefsMax];
+                    std::memcpy(history, saved_hist, sizeof(float) * order);
+                    decode_lsp(selected1, selected2, best0, rec, history);
+                    const float error = lsp_error(rec);
+                    if (error < best_e) { best_e = error; winner = static_cast<uint8_t>(index); }
+                }
+                selected2[part] = winner;
+                improved |= best_e < before;
+            }
+            if (!improved) break;
+        }
+'''
+          new = '''        for (int refinement = 0; refinement < 2; ++refinement) {
+            bool revisit_earlier = false;
+            for (int part = 0; part < mtab_->lsp_split; ++part) {
+                const uint8_t original = selected2[part];
+                uint8_t winner = original;
+                const float before = best_e;
+                for (int index = 0; index < n2; ++index) {
+                    if (index == original) continue;
+                    selected2[part] = static_cast<uint8_t>(index);
+                    float history[kLspCoefsMax], rec[kLspCoefsMax];
+                    std::memcpy(history, saved_hist, sizeof(float) * order);
+                    decode_lsp(selected1, selected2, best0, rec, history);
+                    const float error = lsp_error(rec);
+                    if (error < best_e) { best_e = error; winner = static_cast<uint8_t>(index); }
+                }
+                selected2[part] = winner;
+                // Only a change after part 0 can invalidate an earlier part's
+                // already-completed coordinate search in this sweep.
+                revisit_earlier |= best_e < before && part > 0;
+            }
+            if (!revisit_earlier) break;
+        }
+'''
+          if s.count(old) != 1:
+              raise SystemExit(f'expected one LSP refinement block, got {s.count(old)}')
+          p.write_text(s.replace(old, new, 1))
+          PY
+          git diff --check
+          make -j2 all
+          ./bin/vqf_encode --test-mdct
+          ./bin/vqf_encode --test-codec-lsp
+          python3 tools/test_voice_protection.py bin/vqf_encode
+
+      - name: Commit tested optimization
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "Artix"
+          git config user.email "60628557+art-ix@users.noreply.github.com"
+          git add twinvq/src/twinvq_encoder.cpp
+          git commit -m "Skip redundant second LSP refinement sweeps"
+          git push origin HEAD:encoder-quality
