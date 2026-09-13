@@ -1264,6 +1264,15 @@ void Encoder::refine_long_bark_vq(const float* original_spec, const float* perce
 void Encoder::refine_subblock_bark_vq(const float* original_spec, const float* perceptual,
                                       const float* prior_lsp, const float* prior_bark) {
     if (ftype_ != FrameType::Short && ftype_ != FrameType::Medium) return;
+    // Updated VQ vectors and gains change the optimum Bark shape. Refit it
+    // once more from the same frame-entry history; stop if the first round
+    // does not improve the complete reconstruction.
+    for (int round = 0; round < 2; ++round)
+        if (!refine_subblock_bark_vq_pass(original_spec, perceptual, prior_lsp, prior_bark)) break;
+}
+
+bool Encoder::refine_subblock_bark_vq_pass(const float* original_spec, const float* perceptual,
+                                         const float* prior_lsp, const float* prior_bark) {
     const int n = mtab_->size;
     const int fi = static_cast<int>(ftype_);
     const auto& mode = mtab_->fmode[fi];
@@ -1408,7 +1417,7 @@ void Encoder::refine_subblock_bark_vq(const float* original_spec, const float* p
                 }
         }
     }
-    if (!bark_changed) return;
+    if (!bark_changed) return false;
 
     auto fit_gains = [&](const float* v, const float* st) {
         for (int ch = 0; ch < channels_; ++ch) {
@@ -1505,6 +1514,7 @@ void Encoder::refine_subblock_bark_vq(const float* original_spec, const float* p
     restore_bytes(bark1_, best_bark);
     restore_bytes(bark_use_hist_, best_use);
     restore_bytes(bark_hist_, best_hist);
+    return best_error < original_error;
 }
 
 void Encoder::refine_long_ppc(const float* original_spec, const float* perceptual,

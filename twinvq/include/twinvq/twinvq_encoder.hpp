@@ -92,6 +92,8 @@ private:
                              const float* prior_lsp, const float* prior_bark);
     void refine_subblock_bark_vq(const float* original_spec, const float* perceptual,
                                  const float* prior_lsp, const float* prior_bark);
+    bool refine_subblock_bark_vq_pass(const float* original_spec, const float* perceptual,
+                                     const float* prior_lsp, const float* prior_bark);
     void refine_long_ppc(const float* original_spec, const float* perceptual,
                          const float* prior_lsp, const float* prior_bark);
     void quantize_ppc(const float* spec, const float* lpc_env, const float* perceptual,

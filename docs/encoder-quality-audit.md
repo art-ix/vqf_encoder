@@ -696,3 +696,37 @@ pre-echo checks at 80/96 kbps. The central 96 kbps pre-attack energy ratio
 versus Long remains approximately 0.404. MDCT/window, temporal-search adaptive
 and voice-protection option tests pass. Private music tests stay outside Git;
 these diagnostics do not establish listener preference.
+
+## Implementation update: second Short/Medium Bark refinement round
+
+Baseline: `81f7e36423267a55c2f71253b995a67a67f56ab7`.
+The selected Short/Medium frame now performs at most two complete Bark/VQ/gain
+refinement rounds. After the first round has changed vectors and gains, a new
+Bark fit can reduce reconstruction error further. The second round is skipped
+unless the first improves the complete synthesis-weighted MDCT objective.
+Within each round, the existing bound of three VQ/gain iterations remains.
+This adds at most one Bark fit and three VQ passes to the selected frame.
+
+Each round decodes from the same frame-entry LSP and Bark histories, while
+its fallback is the previous round's complete selected state. Subblock Bark
+history still chains in decoder order within a trial. Rejected candidates
+restore vectors, both gain levels, Bark parameters and persistent history.
+The helper returns whether the complete error strictly improved. No block
+selection, window geometry, bit budget or Long-frame processing changes.
+
+Independent FFmpeg decode, default adaptive 44.1 kHz stereo / 96 kbps,
+`tools/benchmark_gain.py` against the baseline:
+
+| Signal | Before SNR (dB) | After SNR (dB) | Delta (dB) |
+| --- | ---: | ---: | ---: |
+| attacks | 12.733735 | 12.979952 | +0.246217 |
+| tones, harmonics, noise, fade, identical, antiphase, left-only | unchanged | unchanged | 0.000000 |
+
+The default, forced Short and forced Medium codec regressions pass all 18
+modes. Adaptive window placement, chunking, release, duration and pre-echo
+tests pass at 80/96 kbps. The central 96 kbps pre-attack energy ratio versus
+Long is 0.404177 (baseline approximately 0.403687); attack energy ratio is
+0.982390. The late-attack leakage ratio is 1.04453, within its existing guard.
+Private source audio and music measurements remain outside Git. A lower
+frame objective does not guarantee improved listening quality, every spectral
+metric or every later frame, because the selected history affects the future.
