@@ -1,0 +1,62 @@
+name: apply-lsp-formant-patch
+
+on:
+  push:
+    branches: [encoder-quality]
+    paths: [.github/workflows/apply-lsp-formant-patch.yml]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: Apply tested LSP formant refinement
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('twinvq/src/twinvq_encoder.cpp')
+          s = p.read_text()
+
+          replacements = [
+          (
+          '''    float target_log[spectral_bins]{}, grid[spectral_bins]{};\n''',
+          '''    float target_log[spectral_bins]{}, grid[spectral_bins]{}, grid_weight[spectral_bins]{};\n'''
+          ),
+          (
+          '''            if (cfg_.sibilant_protection) {\n                // Resolve narrow low/mid-frequency envelope structure more\n                // densely while retaining coverage through Nyquist.\n                const double nyquist = sample_rate_ * 0.5;\n                const double hz = 600.0 * std::expm1(position * std::log1p(nyquist / 600.0));\n                grid[k] = static_cast<float>(std::cos(kPi * hz / nyquist));\n            } else {\n                grid[k] = std::cos(kPi * (k + 0.5f) / spectral_bins);\n            }\n''',
+          '''            if (cfg_.sibilant_protection) {\n                // Resolve narrow low/mid-frequency envelope structure more\n                // densely while retaining coverage through Nyquist. Give the\n                // decoded-envelope objective a modest extra emphasis over the\n                // speech-formant range without ignoring the rest of the band.\n                const double nyquist = sample_rate_ * 0.5;\n                const double hz = 600.0 * std::expm1(position * std::log1p(nyquist / 600.0));\n                grid[k] = static_cast<float>(std::cos(kPi * hz / nyquist));\n                const double voice = std::clamp((hz - 180.0) / 420.0, 0.0, 1.0) *\n                                     std::clamp((4300.0 - hz) / 1300.0, 0.0, 1.0);\n                grid_weight[k] = static_cast<float>(1.0 + 0.75 * voice);\n            } else {\n                grid[k] = std::cos(kPi * (k + 0.5f) / spectral_bins);\n                grid_weight[k] = 1.0f;\n            }\n'''
+          ),
+          (
+          '''        double sum = 0, squares = 0;\n        for (int k = 0; k < spectral_bins; ++k) {\n            const double d = std::log(std::clamp(\n                eval_lpc_spectrum(lsp_cos, grid[k], order), 1.0e-20f, 1.0e20f)) - target_log[k];\n            sum += d; squares += d*d;\n        }\n        return static_cast<float>(std::max(0.0, squares - sum*sum/spectral_bins));\n''',
+          '''        double sum = 0, squares = 0, weight_sum = 0;\n        for (int k = 0; k < spectral_bins; ++k) {\n            const double d = std::log(std::clamp(\n                eval_lpc_spectrum(lsp_cos, grid[k], order), 1.0e-20f, 1.0e20f)) - target_log[k];\n            const double w = grid_weight[k];\n            sum += w * d; squares += w * d*d; weight_sum += w;\n        }\n        return static_cast<float>(std::max(0.0, squares - sum*sum/weight_sum));\n'''
+          ),
+          (
+          '''    if (cfg_.sibilant_protection && search == LspSearch::Spectral) {\n        for (int part = 0; part < mtab_->lsp_split; ++part) {\n            const uint8_t original = selected2[part];\n            uint8_t winner = original;\n            for (int index = 0; index < n2; ++index) {\n                if (index == original) continue;\n                selected2[part] = static_cast<uint8_t>(index);\n                float history[kLspCoefsMax], rec[kLspCoefsMax];\n                std::memcpy(history, saved_hist, sizeof(float) * order);\n                decode_lsp(selected1, selected2, best0, rec, history);\n                const float error = lsp_error(rec);\n                if (error < best_e) { best_e = error; winner = static_cast<uint8_t>(index); }\n            }\n            selected2[part] = winner;\n        }\n    }\n''',
+          '''    if (cfg_.sibilant_protection && search == LspSearch::Spectral) {\n        // A later split choice can change stabilization and the gain-invariant\n        // envelope mean enough to alter an earlier split's optimum. Do one\n        // bounded extra coordinate sweep and stop immediately if it is stable.\n        for (int refinement = 0; refinement < 2; ++refinement) {\n            bool improved = false;\n            for (int part = 0; part < mtab_->lsp_split; ++part) {\n                const uint8_t original = selected2[part];\n                uint8_t winner = original;\n                const float before = best_e;\n                for (int index = 0; index < n2; ++index) {\n                    if (index == original) continue;\n                    selected2[part] = static_cast<uint8_t>(index);\n                    float history[kLspCoefsMax], rec[kLspCoefsMax];\n                    std::memcpy(history, saved_hist, sizeof(float) * order);\n                    decode_lsp(selected1, selected2, best0, rec, history);\n                    const float error = lsp_error(rec);\n                    if (error < best_e) { best_e = error; winner = static_cast<uint8_t>(index); }\n                }\n                selected2[part] = winner;\n                improved |= best_e < before;\n            }\n            if (!improved) break;\n        }\n    }\n'''
+          )]
+
+          for old, new in replacements:
+              if s.count(old) != 1:
+                  raise SystemExit(f'expected exactly one patch target, got {s.count(old)}')
+              s = s.replace(old, new)
+          p.write_text(s)
+          PY
+          git diff --check
+          make -j2 all
+          ./bin/vqf_encode --test-mdct
+      - name: Commit tested patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "Artix"
+          git config user.email "60628557+art-ix@users.noreply.github.com"
+          git add twinvq/src/twinvq_encoder.cpp
+          git commit -m "Weight LSP envelope search toward protected voice bands"
+          git push origin HEAD:encoder-quality
