@@ -32,6 +32,38 @@ int test_workers() {
     try { pool.run(5, 37, task); }
     catch (const std::invalid_argument&) { rejected = true; }
     if (!rejected) throw std::runtime_error("invalid worker batch accepted");
+    // Dynamic chunks must cover each vector exactly once, including tails,
+    // more workers than chunks, a single worker, and concurrent batch callers.
+    std::vector<std::atomic<int>> dynamic_visits(37);
+    for (auto& value : dynamic_visits) value.store(0);
+    auto dynamic_task = [&](int begin, int end) {
+        if (begin < 0 || end > 37 || begin >= end)
+            throw std::runtime_error("invalid dynamic range");
+        for (int i = begin; i < end; ++i) dynamic_visits[i].fetch_add(1);
+    };
+    int batches = 0;
+    for (int grain : {1, 8, 64}) for (int count : {4, 2, 1}) {
+        pool.run(count, 37, dynamic_task, grain);
+        ++batches;
+    }
+    auto dynamic_other = std::async(std::launch::async, [&] { pool.run(4, 37, dynamic_task, 8); });
+    pool.run(2, 37, dynamic_task, 1);
+    dynamic_other.get();
+    batches += 2;
+    pool.run(4, 0, [](int, int) { throw std::runtime_error("empty dynamic task ran"); }, 8);
+    bool dynamic_caught = false;
+    try {
+        pool.run(4, 37, [](int, int) { throw std::runtime_error("dynamic failure"); }, 8);
+    } catch (const std::runtime_error&) { dynamic_caught = true; }
+    if (!dynamic_caught) throw std::runtime_error("lost dynamic worker exception");
+    pool.run(4, 37, dynamic_task, 8);
+    ++batches;
+    for (const auto& value : dynamic_visits)
+        if (value.load() != batches) throw std::runtime_error("dynamic range skipped or overlapped");
+    rejected = false;
+    try { pool.run(4, 37, dynamic_task, -1); }
+    catch (const std::invalid_argument&) { rejected = true; }
+    if (!rejected) throw std::runtime_error("negative dynamic grain accepted");
     // Copy after a parallel frame; flushing one owner must not invalidate the
     // shared workers needed to finish the other copy of the stream.
     twinvq::Encoder::Config config;

@@ -1,4 +1,6 @@
 #pragma once
+#include <algorithm>
+#include <atomic>
 #include <condition_variable>
 #include <exception>
 #include <functional>
@@ -29,8 +31,9 @@ public:
 
     int capacity() const { return static_cast<int>(workers_.size()) + 1; }
 
-    void run(int count, int vectors, std::function<void(int, int)> task) {
-        if (count < 1 || count > static_cast<int>(workers_.size()) + 1 || vectors < 0)
+    // grain == 0 retains fixed partitions; positive grains are claimed on demand.
+    void run(int count, int vectors, std::function<void(int, int)> task, int grain = 0) {
+        if (count < 1 || count > static_cast<int>(workers_.size()) + 1 || vectors < 0 || grain < 0)
             throw std::invalid_argument("invalid VQ batch size");
         std::lock_guard<std::mutex> batch(batch_mutex_);
         {
@@ -38,12 +41,14 @@ public:
             task_ = std::move(task);
             count_ = count;
             vectors_ = vectors;
+            grain_ = grain;
+            next_.store(0, std::memory_order_relaxed);
             pending_ = count - 1;
             failure_ = nullptr;
             ++generation_;
         }
         ready_.notify_all();
-        try { task_(0, vectors / count); }
+        try { execute(0); }
         catch (...) { record_failure(); }
         std::unique_lock<std::mutex> lock(mutex_);
         finished_.wait(lock, [&] { return pending_ == 0; });
@@ -54,6 +59,20 @@ public:
     }
 
 private:
+    void execute(int id) {
+        if (!grain_) {
+            task_(vectors_ * id / count_, vectors_ * (id + 1) / count_);
+            return;
+        }
+        for (;;) {
+            // The batch mutex/condition variable publish inputs and join outputs;
+            // this counter only assigns disjoint chunks, so relaxed ordering suffices.
+            const size_t begin = next_.fetch_add(static_cast<size_t>(grain_), std::memory_order_relaxed);
+            if (begin >= static_cast<size_t>(vectors_)) return;
+            const size_t end = std::min(begin + static_cast<size_t>(grain_), static_cast<size_t>(vectors_));
+            task_(static_cast<int>(begin), static_cast<int>(end));
+        }
+    }
     void record_failure() {
         std::lock_guard<std::mutex> lock(mutex_);
         if (!failure_) failure_ = std::current_exception();
@@ -66,10 +85,8 @@ private:
             if (stopping_) return;
             seen = generation_;
             if (id >= count_) continue;
-            const int begin = vectors_ * id / count_;
-            const int end = vectors_ * (id + 1) / count_;
             lock.unlock();
-            try { task_(begin, end); }
+            try { execute(id); }
             catch (...) { record_failure(); }
             lock.lock();
             if (--pending_ == 0) finished_.notify_one();
@@ -89,7 +106,8 @@ private:
     std::function<void(int, int)> task_;
     std::exception_ptr failure_;
     size_t generation_ = 0;
-    int count_ = 0, vectors_ = 0, pending_ = 0;
+    std::atomic<size_t> next_{0};
+    int count_ = 0, vectors_ = 0, pending_ = 0, grain_ = 0;
     bool stopping_ = false;
 };
 } // namespace twinvq::detail

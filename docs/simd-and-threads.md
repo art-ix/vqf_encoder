@@ -15,11 +15,13 @@ Frames remain sequential: LSP/Bark histories, overlap and optional temporal
 error feedback must come from the selected preceding frame. Within main VQ,
 each group reads immutable targets, weights, codebooks and permutation data,
 and writes exactly two independent coefficient bytes. Partition those groups
-into contiguous ranges; each worker owns its target/weight/residual buffers.
+into contiguous chunks of up to eight vectors, claimed by available workers
+through an atomic cursor. Each chunk owns its target/weight/residual buffers.
 Join all workers before dequantization, gain fitting or candidate selection.
 
-One range runs on the caller; the remaining ranges run in a reusable worker
-pool created lazily for the first parallel search. Its capacity grows only when
+The caller also claims chunks alongside a reusable worker pool created lazily
+for the first parallel search. Dynamic assignment reduces waiting when some
+vectors need more distance evaluations or pruning is less effective. Its capacity grows only when
 a later block needs more workers; inactive workers sleep between batches.
 The effective worker count remains bounded by at least 16 groups per worker;
 small PPC shape searches stay on the caller. All batch work finishes before
@@ -83,7 +85,9 @@ cores and workload; SIMD width alone does not predict an additional speedup.
 MSVC floating-point control follows [Microsoft's float_control documentation](https://learn.microsoft.com/en-us/cpp/preprocessor/float-control).
 The option test also compares explicit and implicit automatic worker selection.
 
-`--test-workers` checks changing worker counts, uneven/empty ranges, concurrent
+`--test-workers` checks fixed partitions and dynamic chunks (including tails,
+fewer chunks than workers, and exactly-once coverage), changing worker counts,
+uneven/empty ranges, concurrent
 batch callers, exception propagation, reuse after failure and continued encoding after copying
 an Encoder and flushing one owner. It is run by the
 parallel options script, including in Windows CI. Encoder equivalence checks

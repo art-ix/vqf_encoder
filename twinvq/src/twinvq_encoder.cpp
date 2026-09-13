@@ -1244,7 +1244,9 @@ void Encoder::quantize_vectors(const float* residual, const float* weights, Fram
     else {
         if (!vq_workers_ || vq_workers_->capacity() < workers)
             vq_workers_ = std::make_shared<detail::VqWorkers>(workers - 1);
-        vq_workers_->run(workers, n_div_[fi], encode_range);
+        // A vector's pruning/search cost varies. Let available workers claim
+        // short ranges instead of waiting for a fixed, more expensive partition.
+        vq_workers_->run(workers, n_div_[fi], encode_range, 8);
     }
 }
 
