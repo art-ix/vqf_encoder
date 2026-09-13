@@ -127,6 +127,8 @@ void usage() {
               << "  --lsp-search        enable frame-scored LSP search (default)\n"
               << "  --no-bark-search    disable Bark/history search\n"
               << "  --no-lsp-search     disable LSP search\n"
+              << "  --tonal-protection  protect tonal treble against quantization noise (default: on)\n"
+              << "  --no-tonal-protection disable tonal protection\n"
               << "  --psychoacoustic    experimental masking weights (default: off)\n"
               << "  --no-psychoacoustic disable masking weights\n"
               << "  --sibilant-protection experimental broadband treble protection (default: off)\n"
@@ -319,7 +321,9 @@ int main(int argc, char** argv) try {
         std::cout << "psychoacoustic model " << (p ? "ok" : "FAIL") << "\n";
         const bool s = twinvq::sibilant_self_test();
         std::cout << "broadband protection " << (s ? "ok" : "FAIL") << "\n";
-        return (a && b && c && d && e && p && s) ? 0 : 1;
+        const bool t = twinvq::tonal_noise_self_test();
+        std::cout << "tonal protection " << (t ? "ok" : "FAIL") << "\n";
+        return (a && b && c && d && e && p && s && t) ? 0 : 1;
     }
     if (argc >= 2 && std::string(argv[1]) == "--test-roundtrip") {
         const double sec = (argc >= 3) ? std::atof(argv[2]) : 0.6;
@@ -362,6 +366,10 @@ int main(int argc, char** argv) try {
             cfg.bark_search = false;
         } else if (a == "--no-lsp-search") {
             cfg.lsp_search = false;
+        } else if (a == "--tonal-protection") {
+            cfg.tonal_protection = true;
+        } else if (a == "--no-tonal-protection") {
+            cfg.tonal_protection = false;
         } else if (a == "--sibilant-protection") {
             cfg.sibilant_protection = true;
         } else if (a == "--no-sibilant-protection") {

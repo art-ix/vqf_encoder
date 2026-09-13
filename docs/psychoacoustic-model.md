@@ -1,8 +1,10 @@
 # Experimental simultaneous masking model
 
 Enable with `--psychoacoustic` or `Encoder::Config::psychoacoustic = true`.
-The default is off; `--no-psychoacoustic` explicitly selects the existing
-encoder objective. Native integrations using the default Config remain off.
+The simultaneous-masking model defaults to off. The independent
+[tonal noise protection](tonal-noise-protection.md) defaults to on; disable it
+with `--no-tonal-protection` when reproducing the older unweighted objective.
+Native integrations follow the same Config defaults.
 
 This first model estimates relative frequency masking. It does not implement
 an absolute hearing threshold, calibrated playback SPL, temporal masking,

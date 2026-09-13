@@ -2309,7 +2309,7 @@ void Encoder::encode_frame(const float* interleaved_n, bool force_flush, bool ne
     }
 
     std::vector<float> perceptual(spec.size(), 1.0f);
-    if (cfg_.psychoacoustic || cfg_.sibilant_protection) {
+    if (cfg_.psychoacoustic || cfg_.sibilant_protection || cfg_.tonal_protection) {
         std::vector<float> block(channels_ * block_size), block_weights(block.size());
         for (int j = 0; j < sub; ++j) {
             for (int ch = 0; ch < channels_; ++ch)
@@ -2317,6 +2317,8 @@ void Encoder::encode_frame(const float* interleaved_n, bool force_flush, bool ne
             std::fill(block_weights.begin(), block_weights.end(), 1.0f);
             if (cfg_.psychoacoustic)
                 psychoacoustic_weights(block.data(), block_size, channels_, sample_rate_, block_weights.data());
+            if (cfg_.tonal_protection)
+                tonal_noise_weights(block.data(), block_size, channels_, sample_rate_, block_weights.data());
             if (cfg_.sibilant_protection)
                 sibilant_weights(block.data(), block_size, channels_, sample_rate_, block_weights.data());
             for (int ch = 0; ch < channels_; ++ch)

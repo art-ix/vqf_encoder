@@ -92,6 +92,100 @@ void psychoacoustic_weights(const float* spectrum, int n, int channels,
     }
 }
 
+// Experimental protection against noise between partials of tonal spectra.
+// Analyze original M/S energy; the same factor in M and S preserves ear symmetry.
+void tonal_noise_weights(const float* spectrum, int n, int channels,
+                         int sample_rate, float* weights) {
+    std::vector<double> power(n), smooth(n);
+    std::vector<int> ids(n);
+    std::array<Band, kBands> bands{};
+    double total = 0, treble = 0;
+    for (int i = 0; i < n; ++i) {
+        for (int ch = 0; ch < channels; ++ch) {
+            const double x = spectrum[ch * n + i];
+            power[i] += x * x;
+        }
+        total += power[i];
+        if ((i + 0.5) * sample_rate / (2.0 * n) >= 2000) treble += power[i];
+        ids[i] = std::min(kBands - 1, static_cast<int>(bark((i + 0.5) * sample_rate / (2.0 * n))));
+    }
+    if (!(total > 1e-60) || !std::isfinite(total)) return;
+    // Ignore spectral tails when the source has essentially no treble.
+    const double activity = std::clamp((treble / total - 1e-5) / 9e-5, 0.0, 1.0);
+    if (activity == 0) return;
+    const double floor = total / n * 1e-12;
+    for (int i = 0; i < n; ++i) {
+        auto& b = bands[ids[i]];
+        b.energy += power[i]; b.logs += std::log(std::max(power[i], floor)); ++b.count;
+        const int lo = std::max(0, i - 2), hi = std::min(n - 1, i + 2);
+        for (int j = lo; j <= hi; ++j) smooth[i] += power[j];
+        smooth[i] /= hi - lo + 1;
+    }
+    std::array<double, kBands> means{}, tonality{};
+    for (int id = 0; id < kBands; ++id) {
+        const auto& b = bands[id];
+        if (!b.count) continue;
+        means[id] = b.energy / b.count;
+        const double flatness = std::exp(b.logs / b.count) / std::max(means[id], floor);
+        tonality[id] = std::clamp((0.25 - flatness) / 0.20, 0.0, 1.0);
+    }
+    for (int i = 0; i < n; ++i) {
+        const double mean = means[ids[i]], tonal = tonality[ids[i]];
+        const double hz = (i + 0.5) * sample_rate / (2.0 * n);
+        const double taper = std::clamp((hz - 1000.0) / 1500.0, 0.0, 1.0);
+        const double valley = std::clamp(std::sqrt(mean / std::max(smooth[i], floor)), 1.0, 3.0);
+        const float factor = static_cast<float>(1.0 + activity * tonal * taper * valley);
+        for (int ch = 0; ch < channels; ++ch) weights[ch * n + i] *= factor;
+    }
+}
+
+bool tonal_noise_self_test() {
+    constexpr int n = 2048;
+    std::vector<float> spectrum(2 * n), weights(2 * n, 1), other(2 * n);
+    tonal_noise_weights(spectrum.data(), n, 2, 44100, weights.data());
+    for (float w : weights) if (w != 1) return false;
+    // A spectrally flat source must not activate tonal protection.
+    std::fill(spectrum.begin(), spectrum.end(), 1);
+    tonal_noise_weights(spectrum.data(), n, 2, 44100, weights.data());
+    for (float w : weights) if (w != 1) return false;
+    std::fill(spectrum.begin(), spectrum.end(), 0);
+    spectrum[100] = 1;
+    tonal_noise_weights(spectrum.data(), n, 2, 44100, weights.data());
+    for (float w : weights) if (w != 1) return false;
+    spectrum[100] = 0;
+    for (int i = 100; i < 800; i += 13) {
+        spectrum[i] = 1;
+        spectrum[n + i] = 0.5f;
+    }
+    tonal_noise_weights(spectrum.data(), n, 2, 44100, weights.data());
+    if (*std::max_element(weights.begin(), weights.end()) < 3) return false;
+    for (int i = 0; i < n; ++i) {
+        if (!std::isfinite(weights[i]) || weights[i] < 1 || weights[i] > 4 ||
+            weights[n + i] != weights[i]) return false;
+        if ((i + 0.5) * 44100 / (2.0 * n) <= 1000 && weights[i] != 1) return false;
+    }
+    for (float factor : {-1.0f, 1.0f / 65536.0f, 65536.0f}) {
+        auto scaled = spectrum;
+        for (float& x : scaled) x *= factor;
+        std::fill(other.begin(), other.end(), 1);
+        tonal_noise_weights(scaled.data(), n, 2, 44100, other.data());
+        for (int i = 0; i < 2 * n; ++i)
+            if (std::fabs(other[i] - weights[i]) > 1e-5f) return false;
+    }
+    // Ear swap and composition with a preceding weighting model.
+    for (int i = n; i < 2 * n; ++i) spectrum[i] *= -1;
+    std::fill(other.begin(), other.end(), 0.5f);
+    tonal_noise_weights(spectrum.data(), n, 2, 44100, other.data());
+    for (int i = 0; i < 2 * n; ++i)
+        if (other[i] != weights[i] * 0.5f) return false;
+    // Silence following activity must not retain protection from an old frame.
+    std::fill(spectrum.begin(), spectrum.end(), 0);
+    std::fill(other.begin(), other.end(), 1);
+    tonal_noise_weights(spectrum.data(), n, 2, 44100, other.data());
+    for (float w : other) if (w != 1) return false;
+    return true;
+}
+
 // Relative broadband detector, not a speech/phoneme recognizer. Equal M/S
 // weights avoid inventing interaural masking. The input weights may already
 // include the optional simultaneous-masking model.

@@ -36,6 +36,8 @@ public:
         bool psychoacoustic = false;
         // Experimental protection of broadband high-frequency consonant energy.
         bool sibilant_protection = false;
+        // Protect tonal treble against inter-partial quantization noise.
+        bool tonal_protection = true;
         // Transient-adaptive Long/Short; Long remains available via --block-mode.
         BlockMode block_mode = BlockMode::Adaptive;
         // Experimental time-domain ranking of existing frame candidates.
