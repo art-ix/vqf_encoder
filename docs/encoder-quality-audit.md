@@ -663,3 +663,36 @@ Linux diagnostics versus leftover PPC without the extra VQ, two-second
 
 `--test-codec` 44.1 kHz stereo / 96 kbps chirp and the 0.5 s roundtrip SNR
 were unchanged. Encode time on these clips was within run-to-run noise.
+
+## Implementation update: bounded Short/Medium VQ and gain alternation
+
+Baseline: `84decf8e1688a71d01dc1b5448d323103ea6ad7e`.
+After the selected Short/Medium frame's Bark refit, the previous encoder ran
+one VQ pass followed by a gain fit. That gain fit changes the normalized
+residual and synthesis weights, but the corresponding vectors were not
+searched again. The encoder now permits up to three VQ/gain passes at this
+stage and stops at the first non-improvement. This adds at most two VQ passes
+on the selected frame, not on every LSP/Bark candidate.
+
+The former first-pass candidate remains available. Every strict improvement
+saves main indices, global and subblock gains, Bark indices/history flags and
+the final decoder history together. A rejected iteration restores the best
+complete state. The objective remains synthesis-weighted MDCT error, not a
+listening score or a guarantee for every frequency band and later frame.
+The detector, window schedule, bit allocation and Long path are unchanged.
+
+Independent FFmpeg decode with `tools/benchmark_gain.py`, default adaptive
+44.1 kHz stereo / 96 kbps, eight two-second synthetic fixtures:
+
+| Signal | Before SNR (dB) | After SNR (dB) | Delta (dB) |
+| --- | ---: | ---: | ---: |
+| attacks | 12.602596 | 12.733735 | +0.131139 |
+| tones, harmonics, noise, fade, identical, antiphase, left-only | unchanged | unchanged | 0.000000 |
+
+Encoded sizes and decoded lengths are unchanged. The existing FFmpeg EOF
+warning remains. Default, forced Short and forced Medium codec suites pass
+all 18 modes; adaptive tests pass chunking, side attacks, release, tail and
+pre-echo checks at 80/96 kbps. The central 96 kbps pre-attack energy ratio
+versus Long remains approximately 0.404. MDCT/window, temporal-search adaptive
+and voice-protection option tests pass. Private music tests stay outside Git;
+these diagnostics do not establish listener preference.

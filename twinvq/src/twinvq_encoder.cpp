@@ -1467,26 +1467,38 @@ void Encoder::refine_subblock_bark_vq(const float* original_spec, const float* p
 
     std::vector<float> residual(static_cast<size_t>(channels_) * n);
     std::vector<float> weights(residual.size());
-    dec_gain(ftype_, gtmp);
-    for (int ch = 0; ch < channels_; ++ch) {
-        for (int i = 0; i < n; ++i) {
-            const int k = ch * n + i;
-            const float e = std::max(env[k], 1.0e-6f);
-            const double x = static_cast<double>(original_spec[k]) / e;
-            const float b = bark[k];
-            residual[k] = (std::fabs(b) > 1.0e-8f) ? static_cast<float>(x / b) : static_cast<float>(x);
-            const float scale = env[k] * b;
-            weights[k] = scale * scale * perceptual[k];
+    // A gain refit changes the residual seen by VQ. Alternate the two on
+    // the selected frame only, retaining complete decoder state after each
+    // strict improvement. The first pass preserves the former candidate.
+    for (int pass = 0; pass < 3; ++pass) {
+        dec_gain(ftype_, gtmp);
+        for (int ch = 0; ch < channels_; ++ch) {
+            for (int i = 0; i < n; ++i) {
+                const int k = ch * n + i;
+                const float e = std::max(env[k], 1.0e-6f);
+                const double x = static_cast<double>(original_spec[k]) / e;
+                const float b = bark[k];
+                residual[k] = (std::fabs(b) > 1.0e-8f) ? static_cast<float>(x / b) : static_cast<float>(x);
+                const float scale = env[k] * b;
+                weights[k] = scale * scale * perceptual[k];
+            }
         }
+        quantize_main(residual.data(), weights.data());
+        dequant(main_coeffs_, vq.data(), ftype_, mode.cb0, mode.cb1, mode.cb_len_read);
+        bark_shape(st.data(), bark.data());
+        fit_gains(vq.data(), st.data());
+        apply_bark(bark.data());
+        dequant(main_coeffs_, vq.data(), ftype_, mode.cb0, mode.cb1, mode.cb_len_read);
+        const double new_vq_error = synth_error(vq.data(), bark.data());
+        if (!(new_vq_error < best_error)) break;
+        best_error = new_vq_error;
+        best_main = snapshot_bytes(main_coeffs_);
+        best_gain = snapshot_bytes(gain_bits_);
+        best_sub = snapshot_bytes(sub_gain_bits_);
+        best_bark = snapshot_bytes(bark1_);
+        best_use = snapshot_bytes(bark_use_hist_);
+        best_hist = snapshot_bytes(bark_hist_);
     }
-    quantize_main(residual.data(), weights.data());
-    dequant(main_coeffs_, vq.data(), ftype_, mode.cb0, mode.cb1, mode.cb_len_read);
-    bark_shape(st.data(), bark.data());
-    fit_gains(vq.data(), st.data());
-    apply_bark(bark.data());
-    dequant(main_coeffs_, vq.data(), ftype_, mode.cb0, mode.cb1, mode.cb_len_read);
-    const double new_vq_error = synth_error(vq.data(), bark.data());
-    if (new_vq_error < best_error) return;
     restore_bytes(main_coeffs_, best_main);
     restore_bytes(gain_bits_, best_gain);
     restore_bytes(sub_gain_bits_, best_sub);
