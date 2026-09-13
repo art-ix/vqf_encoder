@@ -85,11 +85,13 @@ private:
     void quantize_lsp(int ch, const float* target_lsp, float* rec_out, LspSearch search);
     void quantize_gain_bark(int ch, const float* spec, int block_size,
                             const float* lpc_env, bool search, const float* perceptual, int subblock = 0);
-    // After the frame winner is known, refit Long-frame Bark to the actual
-    // main-VQ vectors instead of the assumed codebook RMS. The previous
-    // Bark/VQ/gain triple is retained unless reconstruction error falls.
+    // After the frame winner is known, refit Bark to the actual main-VQ
+    // vectors instead of the assumed codebook RMS. Long, Short and Medium
+    // keep the previous envelope unless reconstruction error falls.
     void refine_long_bark_vq(const float* original_spec, const float* perceptual,
                              const float* prior_lsp, const float* prior_bark);
+    void refine_subblock_bark_vq(const float* original_spec, const float* perceptual,
+                                 const float* prior_lsp, const float* prior_bark);
     void quantize_ppc(const float* spec, const float* lpc_env, const float* perceptual);
     std::vector<int> ppc_positions(int period_coef) const;
     void quantize_vectors(const float* residual, const float* weights, FrameType type);

@@ -1007,7 +1007,10 @@ void Encoder::quantize_gain_bark(int ch, const float* spec, int block_size,
 
 void Encoder::refine_long_bark_vq(const float* original_spec, const float* perceptual,
                                   const float* prior_lsp, const float* prior_bark) {
-    if (ftype_ != FrameType::Long) return;
+    if (ftype_ != FrameType::Long) {
+        refine_subblock_bark_vq(original_spec, perceptual, prior_lsp, prior_bark);
+        return;
+    }
     const int n = mtab_->size;
     const auto& mode = mtab_->fmode[static_cast<int>(FrameType::Long)];
     const int bark_n_coef = mode.bark_n_coef;
@@ -1228,6 +1231,240 @@ void Encoder::refine_long_bark_vq(const float* original_spec, const float* perce
     if (new_vq_error < best_error) return;
     restore_bytes(main_coeffs_, best_main);
     restore_bytes(gain_bits_, best_gain);
+    restore_bytes(bark1_, best_bark);
+    restore_bytes(bark_use_hist_, best_use);
+    restore_bytes(bark_hist_, best_hist);
+}
+
+void Encoder::refine_subblock_bark_vq(const float* original_spec, const float* perceptual,
+                                      const float* prior_lsp, const float* prior_bark) {
+    if (ftype_ != FrameType::Short && ftype_ != FrameType::Medium) return;
+    const int n = mtab_->size;
+    const int fi = static_cast<int>(ftype_);
+    const auto& mode = mtab_->fmode[fi];
+    const int sub = mode.sub;
+    const int block_size = n / sub;
+    const int bark_n_coef = mode.bark_n_coef;
+    const int fw_cb_len = mode.bark_env_size / bark_n_coef;
+    const int n_ent = 1 << mode.bark_n_bit;
+    const float mix = fi == 0 ? 0.4f : 0.35f;
+
+    std::vector<float> env(static_cast<size_t>(channels_) * n, 1.0f);
+    for (int ch = 0; ch < channels_; ++ch) {
+        float hist[kLspCoefsMax], rec[kLspCoefsMax];
+        std::memcpy(hist, prior_lsp + ch * kLspCoefsMax, sizeof(float) * static_cast<size_t>(mtab_->n_lsp));
+        decode_lsp(lpc_idx1_[ch], lpc_idx2_[ch], lpc_hist_idx_[ch], rec, hist);
+        dec_lpc_spectrum_inv(rec, ftype_, env.data() + ch * n);
+        for (int j = 1; j < sub; ++j)
+            std::copy_n(env.data() + ch * n, block_size, env.data() + ch * n + j * block_size);
+    }
+
+    std::vector<float> vq(static_cast<size_t>(channels_) * n);
+    dequant(main_coeffs_, vq.data(), ftype_, mode.cb0, mode.cb1, mode.cb_len_read);
+
+    int starts[40]{}, widths[40]{}, idx = 0, pos = 0;
+    for (int i = 0; i < fw_cb_len; ++i)
+        for (int j = 0; j < bark_n_coef; ++j, ++idx) {
+            starts[idx] = pos;
+            widths[idx] = mode.bark_tab[idx];
+            pos += widths[idx];
+        }
+
+    auto snapshot_bytes = [](const auto& value) {
+        std::array<unsigned char, sizeof(value)> copy;
+        std::memcpy(copy.data(), &value, sizeof(value));
+        return copy;
+    };
+    auto restore_bytes = [](auto& value, const auto& copy) {
+        std::memcpy(&value, copy.data(), sizeof(value));
+    };
+    const auto saved_main = snapshot_bytes(main_coeffs_);
+    const auto saved_gain = snapshot_bytes(gain_bits_);
+    const auto saved_sub = snapshot_bytes(sub_gain_bits_);
+    const auto saved_bark = snapshot_bytes(bark1_);
+    const auto saved_use = snapshot_bytes(bark_use_hist_);
+    const auto saved_hist = snapshot_bytes(bark_hist_);
+
+    auto synth_error = [&](const float* v, const float* bark) {
+        double error = 0;
+        for (int ch = 0; ch < channels_; ++ch) {
+            for (int i = 0; i < n; ++i) {
+                const int k = ch * n + i;
+                const double rec = env[k] * static_cast<double>(bark[k]) * v[k];
+                const double d = original_spec[k] - rec;
+                error += perceptual[k] * d * d;
+            }
+        }
+        return error;
+    };
+
+    std::vector<float> bark(static_cast<size_t>(channels_) * n, 1.0f);
+    float gtmp[kChannelsMax * kSubblocksMax];
+    auto apply_bark = [&](float* dest) {
+        std::memcpy(bark_hist_, prior_bark, sizeof(bark_hist_));
+        dec_gain(ftype_, gtmp);
+        for (int ch = 0; ch < channels_; ++ch)
+            for (int j = 0; j < sub; ++j)
+                dec_bark_env(bark1_[ch][j], bark_use_hist_[ch][j], ch,
+                             dest + ch * n + j * block_size, gtmp[ch * sub + j], ftype_);
+    };
+    apply_bark(bark.data());
+    restore_bytes(bark_hist_, saved_hist);
+    const double original_error = synth_error(vq.data(), bark.data());
+    double best_error = original_error;
+
+    uint8_t new_idx[kChannelsMax][kSubblocksMax][kBarkNCoefMax]{};
+    uint8_t new_hist[kChannelsMax][kSubblocksMax]{};
+    bool bark_changed = false;
+    const int hist_limit = cfg_.bark_search ? 2 : 1;
+    for (int ch = 0; ch < channels_; ++ch) {
+        float work_hist[40];
+        std::memcpy(work_hist, prior_bark + (fi * kChannelsMax + ch) * 40, sizeof(work_hist));
+        std::vector<double> x(block_size), weight(block_size);
+        for (int j = 0; j < sub; ++j) {
+            std::memcpy(new_idx[ch][j], bark1_[ch][j], sizeof(new_idx[ch][j]));
+            new_hist[ch][j] = bark_use_hist_[ch][j];
+            const float* v = vq.data() + ch * n + j * block_size;
+            const float gain = gtmp[ch * sub + j];
+            for (int i = 0; i < block_size; ++i) {
+                const int k = ch * n + j * block_size + i;
+                const float e = std::max(env[k], 1.0e-6f);
+                x[i] = static_cast<double>(original_spec[k]) / e;
+                weight[i] = static_cast<double>(env[k]) * env[k] * perceptual[k];
+            }
+            double best_total = std::numeric_limits<double>::infinity();
+            uint8_t trial[kBarkNCoefMax]{};
+            int selected_history = new_hist[ch][j];
+            for (int history = 0; history < hist_limit; ++history) {
+                uint8_t candidate[kBarkNCoefMax]{};
+                double total = 0;
+                for (int coef = 0; coef < bark_n_coef; ++coef) {
+                    int best = 0;
+                    double best_e = std::numeric_limits<double>::infinity();
+                    for (int e = 0; e < n_ent; ++e) {
+                        double error = 0;
+                        for (int i = 0; i < fw_cb_len; ++i) {
+                            const int id = i * bark_n_coef + coef;
+                            const float tmp2 = mode.bark_cb[fw_cb_len * e + i] * (1.0f / 4096.0f);
+                            float st = history ? (1.0f - mix) * tmp2 + mix * work_hist[id] + 1.0f
+                                               : tmp2 + 1.0f;
+                            if (st < -1.0f) st = 1.0f;
+                            const double b = static_cast<double>(st) * gain;
+                            const int begin = starts[id];
+                            const int end = begin + widths[id];
+                            for (int k = begin; k < end && k < block_size; ++k) {
+                                const double d = x[k] - v[k] * b;
+                                error += weight[k] * d * d;
+                            }
+                        }
+                        if (error < best_e) {
+                            best_e = error;
+                            best = e;
+                        }
+                    }
+                    candidate[coef] = static_cast<uint8_t>(best);
+                    total += best_e;
+                }
+                if (total < best_total) {
+                    best_total = total;
+                    selected_history = history;
+                    std::memcpy(trial, candidate, sizeof(trial));
+                }
+            }
+            bark_changed |= selected_history != bark_use_hist_[ch][j] ||
+                            std::memcmp(trial, bark1_[ch][j], bark_n_coef) != 0;
+            new_hist[ch][j] = static_cast<uint8_t>(selected_history);
+            std::memcpy(new_idx[ch][j], trial, sizeof(trial));
+            // Decoder writes codebook values into history even when history is off.
+            for (int i = 0; i < fw_cb_len; ++i)
+                for (int coef = 0; coef < bark_n_coef; ++coef) {
+                    const int id = i * bark_n_coef + coef;
+                    work_hist[id] = mode.bark_cb[fw_cb_len * trial[coef] + i] * (1.0f / 4096.0f);
+                }
+        }
+    }
+    if (!bark_changed) return;
+
+    auto fit_gains = [&](const float* v, const float* st) {
+        for (int ch = 0; ch < channels_; ++ch) {
+            double optimum[kSubblocksMax]{}, importance[kSubblocksMax]{};
+            for (int j = 0; j < sub; ++j) {
+                double cross = 0, energy = 0;
+                for (int i = 0; i < block_size; ++i) {
+                    const int k = ch * n + j * block_size + i;
+                    const double shape = env[k] * st[k] * v[k];
+                    cross += perceptual[k] * original_spec[k] * shape;
+                    energy += perceptual[k] * shape * shape;
+                }
+                optimum[j] = energy > 1.0e-20 ? std::max(0.0, cross / energy) : 0;
+                importance[j] = energy;
+            }
+            fit_subblock_gains(ch, optimum, importance);
+        }
+    };
+    auto bark_shape = [&](float* st, const float* bark_prod) {
+        dec_gain(ftype_, gtmp);
+        for (int ch = 0; ch < channels_; ++ch)
+            for (int j = 0; j < sub; ++j) {
+                const float g = std::max(std::fabs(gtmp[ch * sub + j]), 1.0e-12f);
+                for (int i = 0; i < block_size; ++i)
+                    st[ch * n + j * block_size + i] = bark_prod[ch * n + j * block_size + i] / g;
+            }
+    };
+
+    for (int ch = 0; ch < channels_; ++ch)
+        for (int j = 0; j < sub; ++j) {
+            std::memcpy(bark1_[ch][j], new_idx[ch][j], sizeof(new_idx[ch][j]));
+            bark_use_hist_[ch][j] = new_hist[ch][j];
+        }
+
+    std::vector<float> st(static_cast<size_t>(channels_) * n, 1.0f);
+    apply_bark(bark.data());
+    bark_shape(st.data(), bark.data());
+    fit_gains(vq.data(), st.data());
+    apply_bark(bark.data());
+    const double kept_vq_error = synth_error(vq.data(), bark.data());
+    auto best_main = saved_main;
+    auto best_gain = saved_gain;
+    auto best_sub = saved_sub;
+    auto best_bark = saved_bark;
+    auto best_use = saved_use;
+    auto best_hist = saved_hist;
+    if (kept_vq_error < best_error) {
+        best_error = kept_vq_error;
+        best_main = snapshot_bytes(main_coeffs_);
+        best_gain = snapshot_bytes(gain_bits_);
+        best_sub = snapshot_bytes(sub_gain_bits_);
+        best_bark = snapshot_bytes(bark1_);
+        best_use = snapshot_bytes(bark_use_hist_);
+        best_hist = snapshot_bytes(bark_hist_);
+    }
+
+    std::vector<float> residual(static_cast<size_t>(channels_) * n);
+    std::vector<float> weights(residual.size());
+    dec_gain(ftype_, gtmp);
+    for (int ch = 0; ch < channels_; ++ch) {
+        for (int i = 0; i < n; ++i) {
+            const int k = ch * n + i;
+            const float e = std::max(env[k], 1.0e-6f);
+            const double x = static_cast<double>(original_spec[k]) / e;
+            const float b = bark[k];
+            residual[k] = (std::fabs(b) > 1.0e-8f) ? static_cast<float>(x / b) : static_cast<float>(x);
+            const float scale = env[k] * b;
+            weights[k] = scale * scale * perceptual[k];
+        }
+    }
+    quantize_main(residual.data(), weights.data());
+    dequant(main_coeffs_, vq.data(), ftype_, mode.cb0, mode.cb1, mode.cb_len_read);
+    bark_shape(st.data(), bark.data());
+    fit_gains(vq.data(), st.data());
+    apply_bark(bark.data());
+    dequant(main_coeffs_, vq.data(), ftype_, mode.cb0, mode.cb1, mode.cb_len_read);
+    const double new_vq_error = synth_error(vq.data(), bark.data());
+    if (new_vq_error < best_error) return;
+    restore_bytes(main_coeffs_, best_main);
+    restore_bytes(gain_bits_, best_gain);
+    restore_bytes(sub_gain_bits_, best_sub);
     restore_bytes(bark1_, best_bark);
     restore_bytes(bark_use_hist_, best_use);
     restore_bytes(bark_hist_, best_hist);

@@ -169,7 +169,8 @@ extends endpoint samples at the boundaries. Native-rate input is unchanged.
 Run `vqf_encode --test-resample` for filter and timing regression checks.
 
 The encoder uses an FFT-based forward MDCT, reconstruction-weighted two-stage
-VQ searches, fitted channel gains, and a Long-frame Bark refit to the selected
+VQ searches, fitted channel gains, and a Bark refit to the selected
+vectors on Long, Short and Medium frames.
 VQ vectors. See [quality measurements and regression
 checks](docs/encoder-quality.md) for the September 2026 fixes and their limits.
 

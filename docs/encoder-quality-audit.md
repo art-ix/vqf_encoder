@@ -597,3 +597,25 @@ The dedicated early-attack pre-echo fixture still measures 0.45× pre-attack
 energy versus forced Long. `--block-mode long` restores the previous path.
 `--test-codec` chirp scores were unchanged (no Short frames on that sweep).
 These are waveform diagnostics, not listening results.
+
+
+## Implementation update: Short/Medium Bark refit after VQ
+
+Adaptive Short frames previously kept the RMS Bark target computed before
+main VQ. After the frame winner is known they now refit each subblock's Bark
+coefficients to the actual vectors, using decoder history chaining across
+subblocks, then compare three reconstructions: the original triple, the new
+Bark with a gain fit, and one extra VQ. Keep-best restores the previous
+state unless weighted MDCT error falls. Long-frame refit is unchanged.
+
+Linux diagnostics versus the adaptive default, two-second 44.1 kHz stereo /
+96 kbps clips:
+
+| Signal | Delta SNR (dB) |
+| --- | ---: |
+| tones, harmonics, noise, fade, identical, antiphase, left-only | 0.000 |
+| attacks | +0.450 |
+
+Early-attack pre-echo ratio versus forced Long improved from 0.451 to 0.404.
+Encode time was unchanged on these clips. `--test-codec` chirp scores were
+unchanged. These are waveform diagnostics, not listening results.
