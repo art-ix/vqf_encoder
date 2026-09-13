@@ -18,10 +18,41 @@ namespace {
 
 constexpr float kPi = 3.14159265358979323846f;
 
+// Nonnegative terms make each prefix a lower bound. Keep the original
+// accumulation order and abandon only candidates that cannot beat the limit.
+float bounded_vector_error(const float* target, const float* weight,
+                           const int16_t* code, int sign, int length, float limit) {
+    float error = 0;
+    int j = 0;
+    for (; j + 4 <= length; j += 4) {
+        for (int k = 0; k < 4; ++k) {
+            const float d = target[j + k] - sign * code[j + k];
+            error += weight[j + k] * d * d;
+        }
+        if (error >= limit) return error;
+    }
+    for (; j < length; ++j) {
+        const float d = target[j] - sign * code[j];
+        error += weight[j] * d * d;
+    }
+    return error;
+}
+
 float mulawinv(float y, float clip, float mu) {
     y = std::clamp(y / clip, -1.0f, 1.0f);
     const float s = (y < 0) ? -1.0f : 1.0f;
     return clip * s * (std::exp(std::log(1.0f + mu) * std::fabs(y)) - 1.0f) / mu;
+}
+
+const std::array<float, 1 << kGainBits>& long_gain_table() {
+    static const auto values = [] {
+        std::array<float, 1 << kGainBits> result{};
+        const float step = kAmpMax / static_cast<float>((1 << kGainBits) - 1);
+        for (int q = 0; q < (1 << kGainBits); ++q)
+            result[q] = (1.0f / 8192.0f) * mulawinv(step * 0.5f + step * q, kAmpMax, kMulawMu);
+        return result;
+    }();
+    return values;
 }
 
 float mulaw(float x, float clip, float mu) {
@@ -1094,11 +1125,8 @@ void Encoder::quantize_vectors(const float* residual, const float* weights, Fram
             const int smax = sign0_en ? 2 : 1;
             for (int s = 0; s < smax; s++) {
                 const int sg = (s == 0) ? 1 : -1;
-                float e = 0;
-                for (int j = 0; j < length; j++) {
-                    const float d = target[static_cast<size_t>(j)] - sg * t0[j];
-                    e += weight[j] * d * d;
-                }
+                const float e = bounded_vector_error(target.data(), weight.data(), t0,
+                                                     sg, length, beam_error[beam_size - 1]);
                 for (int slot = 0; slot < beam_size; ++slot) {
                     if (e >= beam_error[slot]) continue;
                     for (int k = beam_size - 1; k > slot; --k) {
@@ -1121,11 +1149,8 @@ void Encoder::quantize_vectors(const float* residual, const float* weights, Fram
                     for (int a = 0; a < (stage ? n1 : n0); ++a) {
                         for (int s = 0; s < ((stage ? sign1_en : sign0_en) ? 2 : 1); ++s) {
                             const int sg = s ? -1 : 1;
-                            float e = 0;
-                            for (int j = 0; j < length; ++j) {
-                                const float d = rest[j] - sg * cb[a * cb_len + j];
-                                e += weight[j] * d * d;
-                            }
+                            const float e = bounded_vector_error(rest.data(), weight.data(), cb + a * cb_len,
+                                                                 sg, length, best_e);
                             if (e < best_e) {
                                 best_e = e;
                                 if (stage) { best1 = a; s1 = sg; }
@@ -1144,11 +1169,8 @@ void Encoder::quantize_vectors(const float* residual, const float* weights, Fram
                 const int16_t* t1 = cb1 + b * cb_len;
                 for (int s = 0; s < (sign1_en ? 2 : 1); s++) {
                     const int sg = (s == 0) ? 1 : -1;
-                    float e = 0;
-                    for (int j = 0; j < length; j++) {
-                        const float d = rest[j] - sg * t1[j];
-                        e += weight[j] * d * d;
-                    }
+                    const float e = bounded_vector_error(rest.data(), weight.data(), t1,
+                                                         sg, length, best_e);
                     if (e < best_e) {
                         best_e = e;
                         best0 = beam_index[slot]; s0 = beam_sign[slot];
@@ -1177,11 +1199,8 @@ void Encoder::quantize_vectors(const float* residual, const float* weights, Fram
         for (int b = 0; b < n1; ++b) {
             for (int sign = 0; sign < (sign1_en ? 2 : 1); ++sign) {
                 const int sg = sign ? -1 : 1;
-                float e = 0;
-                for (int j = 0; j < length; ++j) {
-                    const float d = target[j] - sg * cb1[b * cb_len + j];
-                    e += weight[j] * d * d;
-                }
+                const float e = bounded_vector_error(target.data(), weight.data(), cb1 + b * cb_len,
+                                                     sg, length, reverse_error[reverse_beam - 1]);
                 for (int slot = 0; slot < reverse_beam; ++slot) {
                     if (e >= reverse_error[slot]) continue;
                     for (int k = reverse_beam - 1; k > slot; --k) {
@@ -1204,11 +1223,8 @@ void Encoder::quantize_vectors(const float* residual, const float* weights, Fram
             for (int a = 0; a < n0; ++a) {
                 for (int sign = 0; sign < (sign0_en ? 2 : 1); ++sign) {
                     const int sg = sign ? -1 : 1;
-                    float e = 0;
-                    for (int j = 0; j < length; ++j) {
-                        const float d = rest[j] - sg * cb0[a * cb_len + j];
-                        e += weight[j] * d * d;
-                    }
+                    const float e = bounded_vector_error(rest.data(), weight.data(), cb0 + a * cb_len,
+                                                         sg, length, best_e);
                     if (e < best_e) {
                         best_e = e; best0 = a; s0 = sg;
                         best1 = reverse_index[slot]; s1 = reverse_sign[slot];
@@ -1405,6 +1421,10 @@ void Encoder::encode_frame(const float* interleaved_n, bool force_flush, bool ne
     const auto prior_bark = snapshot(bark_hist_);
     using TrialKey = std::array<uint8_t, 1 + kChannelsMax * (2 + kLspSplitMax)>;
     std::vector<TrialKey> evaluated;
+    // Different search routes can emit the same initial quantizer state.
+    // Skip repeated main VQ only after checking every transmitted envelope
+    // field. All trials start from the same history and original spectrum.
+    std::vector<std::vector<uint8_t>> prepared_states;
     struct TimeTrial {
         double spectral;
         double temporal;
@@ -1542,6 +1562,18 @@ void Encoder::encode_frame(const float* interleaved_n, bool force_flush, bool ne
                 if (cfg_.temporal_search) scales[ch * n + i] = synthesis_scale;
             }
         }
+
+        std::vector<uint8_t> prepared;
+        auto append = [&](const auto& field) {
+            const auto* bytes = reinterpret_cast<const uint8_t*>(&field);
+            prepared.insert(prepared.end(), bytes, bytes + sizeof(field));
+        };
+        append(lpc_idx1_); append(lpc_idx2_); append(lpc_hist_idx_);
+        append(bark1_); append(bark_use_hist_); append(gain_bits_); append(sub_gain_bits_);
+        append(ppc_coeffs_); append(p_coef_); append(g_coef_);
+        if (std::find(prepared_states.begin(), prepared_states.end(), prepared) != prepared_states.end())
+            return std::numeric_limits<double>::infinity();
+        prepared_states.push_back(std::move(prepared));
 
         auto finish_trial = [&](double spectral, const float* base) {
             if (!cfg_.temporal_search) return spectral;
@@ -1685,7 +1717,10 @@ void Encoder::encode_frame(const float* interleaved_n, bool force_flush, bool ne
                 weights[i] *= ratio * ratio;
             }
         }
-        quantize_main(residual.data(), weights.data());
+        // An unchanged decoded gain leaves target and weights unchanged;
+        // the deterministic VQ result from the first pass is already present.
+        if (!std::equal(old_gain, old_gain + channels_, new_gain))
+            quantize_main(residual.data(), weights.data());
         retain_candidate();
         restore_best();
 
@@ -1705,10 +1740,9 @@ void Encoder::encode_frame(const float* interleaved_n, bool force_flush, bool ne
                 const double optimum = std::max(0.0, cross / energy);
                 int selected = gain_bits_[ch];
                 double distance = std::numeric_limits<double>::infinity();
-                const float step = kAmpMax / static_cast<float>((1 << kGainBits) - 1);
+                const auto& decoded_gains = long_gain_table();
                 for (int q = 0; q < (1 << kGainBits); ++q) {
-                    const float gain = (1.0f / 8192.0f) *
-                        mulawinv(step * 0.5f + step * q, kAmpMax, kMulawMu);
+                    const float gain = decoded_gains[q];
                     const double d = std::fabs(static_cast<double>(gain) / base_gain[ch] - optimum);
                     if (d < distance) { distance = d; selected = q; }
                 }
@@ -1810,6 +1844,7 @@ void Encoder::encode_frame(const float* interleaved_n, bool force_flush, bool ne
         if (!winner) throw std::runtime_error("no finite temporal candidate");
         const auto chosen = *winner;
         evaluated.clear();
+        prepared_states.clear();
         trial(chosen.strategy, chosen.bark, chosen.ppc); // Regenerate only the selected frame state.
         commit_time_state();
         write_frame_bits();

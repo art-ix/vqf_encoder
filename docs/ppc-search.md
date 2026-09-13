@@ -48,3 +48,14 @@ synthetic attacks at three positions, checking chunking, transitions, flush
 and the existing pre-echo/gain gates. Limited external-decoder comparisons
 also check unchanged output bytes when PPC is disabled and unchanged file
 sizes when enabled. No listening validation has been performed.
+
+## Follow-up experiments
+
+Two more expensive proposals were evaluated and excluded from the retained
+encoder: refitting the period against a decoded shape, and exhaustive signed
+PPC codebook-pair search alongside the existing beam candidate. Their limited
+additional reconstruction gains and mixed spectral results did not justify
+the extra work. Neither is enabled by `--ppc-search`.
+
+The retained implementation instead avoids redundant work without narrowing
+its candidate set. See [encoder search performance](encoder-search-performance.md).

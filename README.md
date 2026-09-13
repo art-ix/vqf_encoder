@@ -298,3 +298,8 @@ The option is off by default (`--no-ppc-search`); the C++ setting is
 `Encoder::Config::ppc_search`. It can be combined with masking weights,
 adaptive blocks and temporal ranking. Encoding takes longer; bitrate and input
 buffering are unchanged. See [PPC search](docs/ppc-search.md) for scope and limits.
+
+Encoder searches avoid duplicate frame candidates and stop scoring VQ vectors
+once their error cannot beat the current selection. Search options and bitstream
+fields are unchanged. See [performance notes](docs/encoder-search-performance.md)
+for the equivalence check and benchmark procedure.
